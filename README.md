@@ -3,8 +3,24 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-lightgrey.svg)](https://apple.com/macos)
 [![Language](https://img.shields.io/badge/Swift-6.0-orange.svg)](https://swift.org)
+[![Download](https://img.shields.io/badge/download-latest%20release-brightgreen.svg)](https://github.com/Shir0o/dispatch-macos/releases/latest)
 
 > A lightweight, open-source native macOS triage client for Gmail and GitHub. Zero Docker containers. Zero Electron runtimes. Sub-50ms interaction latency.
+
+---
+
+## Installation
+
+Grab the latest build from [GitHub Releases](https://github.com/Shir0o/dispatch-macos/releases/latest):
+
+1. Download the latest `Dispatch-<version>.dmg`.
+2. Open the disk image and drag **Dispatch** into **Applications**.
+3. Launch Dispatch from Applications.
+
+Requires macOS 14 (Sonoma) or newer. Releases are universal builds for Apple silicon and Intel Macs.
+
+> [!NOTE]
+> Releases are currently ad-hoc signed (not notarized). If macOS blocks the first launch, right-click the app and choose **Open**, or clear the quarantine flag with `xattr -dr com.apple.quarantine /Applications/Dispatch.app`.
 
 ---
 
@@ -108,6 +124,9 @@ dispatch-macos/
 ├── Package.swift                    # SPM manifest (zero external dependencies)
 ├── Dispatch.entitlements            # App Sandbox & network client entitlements
 ├── Info.plist                       # Bundle metadata & OAuth redirect scheme
+├── .github/
+│   └── workflows/
+│       └── release.yml              # Tag-driven DMG build & GitHub Release
 ├── Sources/
 │   └── DispatchApp/
 │       ├── App/                     # Application lifecycle & composition root
@@ -118,7 +137,8 @@ dispatch-macos/
 ├── Tests/
 │   └── DispatchAppTests/            # Concurrency, state machine, and parsing unit tests
 ├── scripts/
-│   └── package-app.sh               # Release packaging & code-signing script
+│   ├── package-app.sh               # Release build, bundle assembly & code-signing
+│   └── create-dmg.sh                # Drag-to-install DMG packaging
 ├── docs/
 │   └── designs/
 │       ├── dev_triage_macos.md      # Formal Technical Design RFC
@@ -144,12 +164,45 @@ dispatch-macos/
 git clone https://github.com/Shir0o/dispatch-macos.git
 cd dispatch-macos
 
-# Build debug executable and verify tests build
+# Build debug executable and run the test suite
 swift build --build-tests
+swift test --no-parallel
 
-# Package and code-sign release macOS application bundle (Dispatch.app)
+# Package and code-sign the release app bundle (build/Dispatch.app)
 ./scripts/package-app.sh
+
+# Build a universal (arm64 + x86_64) bundle and turn it into a DMG
+UNIVERSAL=1 ./scripts/package-app.sh
+./scripts/create-dmg.sh
 ```
+
+`package-app.sh` accepts `VERSION`, `BUILD_NUMBER`, `UNIVERSAL=1`, `BUILD_DIR`, and `SIGN_IDENTITY` environment overrides. `create-dmg.sh` writes a compressed `Dispatch-<version>.dmg` next to the app bundle, with an `Applications` shortcut for drag-to-install.
+
+---
+
+## Releasing
+
+Releases are built and published by [`.github/workflows/release.yml`](.github/workflows/release.yml). Push a semantic-version tag:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The workflow runs the test suite, builds a universal `Dispatch.app`, stamps the version from the tag into the bundle, signs it, produces `Dispatch-1.0.0.dmg` plus a SHA-256 checksum, verifies the disk image contents, and publishes both as a GitHub Release. Suffixed tags such as `v1.1.0-beta.1` are published as pre-releases.
+
+You can also trigger a release from the Actions tab with only a version number; the workflow creates the tag for you.
+
+By default the DMG is ad-hoc signed. To enable Developer ID signing and Apple notarization, add these repository secrets:
+
+| Secret | Purpose |
+|---|---|
+| `MACOS_CERTIFICATE` | Base64-encoded `.p12` Developer ID Application certificate |
+| `MACOS_CERTIFICATE_PASSWORD` | Password for the `.p12` |
+| `KEYCHAIN_PASSWORD` | Any random password for the temporary CI keychain |
+| `APPLE_ID` | Apple ID used for notarization |
+| `APPLE_APP_PASSWORD` | App-specific password for that Apple ID |
+| `APPLE_TEAM_ID` | Apple Developer Team ID |
 
 ---
 

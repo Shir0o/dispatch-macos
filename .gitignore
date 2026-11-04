@@ -25,3 +25,8 @@ credentials.json
 client_secret*.json
 snapshot.json
 ~/Library/Application Support/DevTriage/
+
+# Build & release artifacts
+build/
+*.dmg
+*.dmg.sha256

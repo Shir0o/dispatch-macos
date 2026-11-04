@@ -34,11 +34,14 @@ Before submitting a pull request, ensure your code compiles cleanly and passes a
 # Build with Swift 6 strict concurrency checks
 swift build
 
-# Run targeted unit tests
-swift test
+# Run targeted unit tests (serial: the MockURLProtocol stubs share global state)
+swift test --no-parallel
 ```
 
 ### 3. Submitting Pull Requests
 1. Fork the repository and create a descriptive branch: `feature/your-feature-name` or `fix/issue-description`.
 2. Keep diffs surgical and focused directly on the issue being addressed.
 3. Open a pull request against `main`. Ensure all GitHub Actions CI checks pass.
+
+### 4. Releasing
+Releases are automated. Push a `v<semver>` tag (or dispatch the Release workflow with a version) and `.github/workflows/release.yml` builds, tests, signs, and publishes the DMG. See [Releasing](README.md#releasing) for the full process and signing secrets.
