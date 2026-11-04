@@ -1,9 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// Composition root and application lifecycle entrypoint for DevTriage.
+/// Composition root and application lifecycle entrypoint for Dispatch.
 @main
-struct DevTriageApp: App {
+struct DispatchApp: App {
     @State private var preferencesStore = PreferencesStore()
     @State private var authService = AuthService()
     @State private var triageStore = TriageStore()

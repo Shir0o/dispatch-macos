@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import DevTriage
+@testable import DispatchApp
 
 // MARK: - Mock URL Protocol for Network Isolation
 

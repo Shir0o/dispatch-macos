@@ -6,10 +6,10 @@ import Observation
 @MainActor
 public final class PreferencesStore {
     private enum Keys {
-        static let googleClientId = "devtriage.googleClientId"
-        static let githubPAT = "devtriage.githubPAT"
-        static let projectsDirectory = "devtriage.projectsDirectory"
-        static let preferredTerminal = "devtriage.preferredTerminal"
+        static let googleClientId = "dispatch.googleClientId"
+        static let githubPAT = "dispatch.githubPAT"
+        static let projectsDirectory = "dispatch.projectsDirectory"
+        static let preferredTerminal = "dispatch.preferredTerminal"
     }
 
     private let defaults: UserDefaults

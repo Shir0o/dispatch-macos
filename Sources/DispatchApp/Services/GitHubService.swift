@@ -78,7 +78,7 @@ public final class GitHubService: Sendable {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
-        request.setValue("DevTriage-macOS", forHTTPHeaderField: "User-Agent")
+        request.setValue("Dispatch-macOS", forHTTPHeaderField: "User-Agent")
 
         for (key, value) in headers {
             request.setValue(value, forHTTPHeaderField: key)

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import DevTriage
+@testable import DispatchApp
 
 @Suite("TriageStore Tests")
 @MainActor
@@ -38,7 +38,7 @@ struct TriageStoreTests {
     private func getSnapshotURL() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        let dir = appSupport.appendingPathComponent("DevTriage", isDirectory: true)
+        let dir = appSupport.appendingPathComponent("Dispatch", isDirectory: true)
         return dir.appendingPathComponent("snapshot.json")
     }
 

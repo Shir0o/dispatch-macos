@@ -30,7 +30,7 @@ public struct OnboardingView: View {
                         .foregroundStyle(.white)
                 }
 
-                Text("Welcome to DevTriage")
+                Text("Welcome to Dispatch")
                     .font(.system(size: 24, weight: .bold))
 
                 Text("Sub-50ms native inbox & GitHub triage client with 1-click local coding agent dispatch.")

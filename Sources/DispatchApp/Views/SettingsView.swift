@@ -185,7 +185,7 @@ public struct SettingsView: View {
                         }
                     }
 
-                    Text("DevTriage inspects this directory to link local repository working copies inside formatted prompts for CLI agents.")
+                    Text("Dispatch inspects this directory to link local repository working copies inside formatted prompts for CLI agents.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

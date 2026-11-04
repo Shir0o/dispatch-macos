@@ -2,28 +2,30 @@
 import PackageDescription
 
 let package = Package(
-    name: "DevTriage",
+    name: "Dispatch",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .executable(
-            name: "DevTriage",
-            targets: ["DevTriage"]
+            name: "Dispatch",
+            targets: ["DispatchApp"]
         )
     ],
     dependencies: [],
     targets: [
         .executableTarget(
-            name: "DevTriage",
+            name: "DispatchApp",
             dependencies: [],
+            path: "Sources/DispatchApp",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
         ),
         .testTarget(
-            name: "DevTriageTests",
-            dependencies: ["DevTriage"],
+            name: "DispatchAppTests",
+            dependencies: ["DispatchApp"],
+            path: "Tests/DispatchAppTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]

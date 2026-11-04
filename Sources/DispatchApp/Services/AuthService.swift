@@ -81,9 +81,9 @@ public actor AuthService {
     public static let googleTokenExpiryKey = "google_token_expiry"
     public static let gitHubPATKey = "github_pat"
 
-    public static let serviceName = "com.devtriage.macos"
-    public static let callbackScheme = "com.googleusercontent.apps.devtriage"
-    public static let redirectURI = "com.googleusercontent.apps.devtriage:/oauth2redirect"
+    public static let serviceName = "com.shir0o.dispatch"
+    public static let callbackScheme = "com.googleusercontent.apps.dispatch"
+    public static let redirectURI = "com.googleusercontent.apps.dispatch:/oauth2redirect"
 
     private let session: URLSession
     public private(set) var activeCodeVerifier: String?
@@ -380,7 +380,7 @@ public actor AuthService {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
-        request.setValue("DevTriage-macOS", forHTTPHeaderField: "User-Agent")
+        request.setValue("Dispatch-macOS", forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {

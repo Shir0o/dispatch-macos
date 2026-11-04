@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import AppKit
-@testable import DevTriage
+@testable import DispatchApp
 
 @Suite("AgentDispatch Tests")
 struct AgentDispatchTests {
@@ -251,15 +251,15 @@ struct AgentDispatchTests {
     @Test("PreferencesStore resolves local repository path within configured projects directory")
     @MainActor
     func testPreferencesStoreLocalPathResolution() {
-        let defaults = UserDefaults(suiteName: "com.devtriage.test.\(UUID().uuidString)")!
-        defer { defaults.removePersistentDomain(forName: "com.devtriage.test.\(UUID().uuidString)") }
+        let defaults = UserDefaults(suiteName: "com.dispatch.test.\(UUID().uuidString)")!
+        defer { defaults.removePersistentDomain(forName: "com.dispatch.test.\(UUID().uuidString)") }
 
         let prefs = PreferencesStore(defaults: defaults)
-        prefs.projectsDirectory = "/tmp/DevTriageTestProjects"
+        prefs.projectsDirectory = "/tmp/DispatchTestProjects"
 
         let resolved = prefs.localPath(for: "owner/my-cool-project")
         #expect(resolved != nil)
         #expect(resolved?.lastPathComponent == "my-cool-project")
-        #expect(resolved?.path.contains("/tmp/DevTriageTestProjects") == true)
+        #expect(resolved?.path.contains("/tmp/DispatchTestProjects") == true)
     }
 }

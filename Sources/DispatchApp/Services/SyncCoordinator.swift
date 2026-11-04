@@ -27,7 +27,7 @@ public actor SyncCoordinator {
     private var itemStreamContinuations: [UUID: AsyncStream<[TriageItem]>.Continuation] = [:]
 
     private let pathMonitor: NWPathMonitor
-    private let monitorQueue = DispatchQueue(label: "com.devtriage.networkmonitor")
+    private let monitorQueue = DispatchQueue(label: "com.shir0o.dispatch.networkmonitor")
 
     public init(
         gmailService: GmailService,

@@ -195,7 +195,7 @@ public final class TriageStore {
     private var snapshotURL: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        let dir = appSupport.appendingPathComponent("DevTriage", isDirectory: true)
+        let dir = appSupport.appendingPathComponent("Dispatch", isDirectory: true)
         return dir.appendingPathComponent("snapshot.json")
     }
 
@@ -214,7 +214,7 @@ public final class TriageStore {
                 selectedItemId = activeItems.first?.id
             }
         } catch {
-            print("[DevTriage] Failed to load snapshot: \(error)")
+            print("[Dispatch] Failed to load snapshot: \(error)")
         }
     }
 
@@ -238,7 +238,7 @@ public final class TriageStore {
 
             try data.write(to: url, options: [.atomic, .completeFileProtection])
         } catch {
-            print("[DevTriage] Failed to write snapshot synchronously: \(error)")
+            print("[Dispatch] Failed to write snapshot synchronously: \(error)")
         }
     }
 
@@ -270,12 +270,12 @@ public final class TriageStore {
             do {
                 if originalSource == .gmail {
                     guard let gmailService = self.gmailService else {
-                        throw NSError(domain: "DevTriage", code: -1, userInfo: [NSLocalizedDescriptionKey: "Gmail service not configured"])
+                        throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "Gmail service not configured"])
                     }
                     try await gmailService.archiveThread(threadId: item.id)
                 } else {
                     guard let githubService = self.githubService else {
-                        throw NSError(domain: "DevTriage", code: -1, userInfo: [NSLocalizedDescriptionKey: "GitHub service not configured"])
+                        throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "GitHub service not configured"])
                     }
                     try await githubService.dismissNotification(threadId: item.id)
                 }
@@ -318,12 +318,12 @@ public final class TriageStore {
             do {
                 if originalSource == .gmail {
                     guard let gmailService = self.gmailService else {
-                        throw NSError(domain: "DevTriage", code: -1, userInfo: [NSLocalizedDescriptionKey: "Gmail service not configured"])
+                        throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "Gmail service not configured"])
                     }
                     try await gmailService.trashThread(threadId: item.id)
                 } else {
                     guard let githubService = self.githubService else {
-                        throw NSError(domain: "DevTriage", code: -1, userInfo: [NSLocalizedDescriptionKey: "GitHub service not configured"])
+                        throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "GitHub service not configured"])
                     }
                     try await githubService.unsubscribeNotification(threadId: item.id)
                 }

@@ -1,4 +1,4 @@
-# DevTriage for macOS
+# Dispatch for macOS
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-lightgrey.svg)](https://apple.com/macos)
@@ -16,7 +16,7 @@ Software developers are constantly context-switching between asynchronous person
 * **Dated Desktop Clients:** Traditional desktop mail clients either lack Gmail-native label tag semantics (forcing multi-folder duplication via IMAP) or offer zero integration with GitHub issue and PR triage.
 * **Fragmented AI Workflows:** When running local AI coding agents (Claude Code, OpenCode, Antigravity) in the terminal, developers lose track of issue reproduction details and context when the agent asks clarifying questions.
 
-**DevTriage** is a native Swift 6 and SwiftUI client engineered specifically for rapid developer triage.
+**Dispatch** is a native Swift 6 and SwiftUI client engineered specifically for rapid developer triage.
 
 ---
 
@@ -29,17 +29,17 @@ Software developers are constantly context-switching between asynchronous person
   * `e`: Archive email (removes `INBOX` label) or mark GitHub notification as done
   * `s`: Star / pin item
   * `u`: Mark unread
-  * `#` or `Delete`: Trash / dismiss
+  * `#` or `Delete`: Trash / unsubscribe
   * `Cmd+O`: Open thread / issue directly in default browser
 * **Non-Destructive Invariant:** Fast triage (`e`) archives personal inbox messages or dismisses notifications. It **never** mutates public GitHub issue states (closing an issue remains an explicit action).
 * **Local Coding Agent Dispatch (`Cmd+Shift+A`):**
   * Bundles issue title, reproduction steps, comments, labels, and local repo paths into a structured markdown prompt.
-  * Dispatches the prompt to your configured local CLI agent (`claude`, `opencode`, `antigravity`) in your favorite terminal (Terminal, iTerm2, Ghostty).
-  * Pins the issue details side-by-side in DevTriage so you can answer agent clarifying questions without opening browser tabs.
+  * Dispatches the prompt to `NSPasteboard.general` and activates your configured local CLI agent (`claude`, `opencode`, `antigravity`) in your favorite terminal or IDE (Terminal, iTerm2, Ghostty, VS Code).
+  * Pins the issue details side-by-side in Dispatch so you can answer agent clarifying questions without opening browser tabs.
 * **WebKit Isolation & Security:**
   * Single recycled `WKWebView` instance in the detail pane.
   * JavaScript execution strictly disabled (`allowsContentJavaScript = false`).
-  * Remote tracking pixels blocked by default with an on-demand image toggle.
+  * Remote tracking pixels blocked by default with declarative CSP `<meta>` tags.
   * Dark mode CSS automatically injected.
 * **Zero Container / Zero Daemon Overhead:** Runs completely standalone. Cold start loads instantly from an ephemeral quit snapshot (`snapshot.json`). Tokens stored securely in the macOS Keychain.
 
@@ -47,7 +47,7 @@ Software developers are constantly context-switching between asynchronous person
 
 ## Technical Architecture
 
-DevTriage is structured around Swift 6 structured concurrency and isolated background actors:
+Dispatch is structured around Swift 6 structured concurrency and isolated background actors:
 
 ```mermaid
 flowchart TD
@@ -55,20 +55,20 @@ flowchart TD
         SidebarView["SidebarView (NavigationSplitView)"]
         StreamView["TriageStreamView (LazyVStack / List)"]
         DetailView["DetailPaneView (SwiftUI + Recycled WKWebView)"]
-        KeyHandler["KeyboardShortcutModifier (Vim/Superhuman)"]
+        KeyHandler["KeyboardShortcutModifier (Vim/Superhuman + FocusGuard)"]
     end
 
     subgraph State ["State & Coordination Layer"]
+        PreferencesStore["PreferencesStore (@Observable)"]
         TriageStore["TriageStore (@Observable @MainActor)"]
         SyncCoordinator["SyncCoordinator (Swift Actor)"]
-        SnapshotManager["SnapshotManager (Disk JSON Cache)"]
-        AgentDispatch["AgentDispatchService (Context Formatter & CLI Launcher)"]
+        AgentDispatch["AgentDispatchService (Clipboard & App Activator)"]
     end
 
     subgraph Services ["External Network & Security Layer"]
         AuthService["AuthService (ASWebAuthenticationSession + Keychain)"]
-        GmailService["GmailService (REST API + users.history.list)"]
-        GitHubService["GitHubService (REST /notifications + GraphQL)"]
+        GmailService["GmailService (REST API + users.threads)"]
+        GitHubService["GitHubService (REST API v3 /notifications & /check-runs)"]
         PathMonitor["NWPathMonitor (Network Reachability)"]
         WorkspaceMonitor["NSWorkspace (Sleep / Wake Notifications)"]
     end
@@ -78,11 +78,14 @@ flowchart TD
     StreamView --> DetailView
     SidebarView --> TriageStore
 
-    TriageStore <-->|Load / Save Snapshot| SnapshotManager
+    TriageStore <-->|Load / Save Snapshot (Atomic Synchronous)| DiskStorage["~/Library/Application Support/Dispatch/snapshot.json"]
+    TriageStore -->|Optimistic Archive / Star / Trash| GmailService
+    TriageStore -->|Optimistic Dismiss / Unsubscribe| GitHubService
     TriageStore <-->|Dispatch Trigger| AgentDispatch
-    AgentDispatch -->|Launch Terminal / Agent CLI| ExternalTerminal["External Terminal / IDE"]
+    AgentDispatch -->|Copy Prompt| Pasteboard["NSPasteboard.general"]
+    AgentDispatch -->|Activate App| ExternalTerminal["External Terminal / IDE"]
 
-    SyncCoordinator -->|Update Observable State| TriageStore
+    SyncCoordinator -->|Deliver Polled Items| TriageStore
     SyncCoordinator --> GmailService
     SyncCoordinator --> GitHubService
     SyncCoordinator --> AuthService
@@ -91,7 +94,7 @@ flowchart TD
     WorkspaceMonitor --> SyncCoordinator
     AuthService --> Keychain["macOS Keychain (Security.framework)"]
     GmailService --> GmailAPI["Google Gmail REST API"]
-    GitHubService --> GitHubAPI["GitHub REST & GraphQL API"]
+    GitHubService --> GitHubAPI["GitHub REST API v3"]
 ```
 
 For complete technical specifications, data schemas, and design trade-offs, see the [Technical Design Document](docs/designs/dev_triage_macos.md).
@@ -101,17 +104,21 @@ For complete technical specifications, data schemas, and design trade-offs, see 
 ## Project Structure
 
 ```
-dev-triage-macos/
+dispatch-macos/
 ├── Package.swift                    # SPM manifest (zero external dependencies)
+├── Dispatch.entitlements            # App Sandbox & network client entitlements
+├── Info.plist                       # Bundle metadata & OAuth redirect scheme
 ├── Sources/
-│   └── DevTriage/
-│       ├── App/                     # Application lifecycle & window management
+│   └── DispatchApp/
+│       ├── App/                     # Application lifecycle & composition root
 │       ├── Models/                  # Domain entities (TriageItem, TriageKind)
-│       ├── State/                   # Bounded in-memory observable store
+│       ├── State/                   # Bounded in-memory observable store & preferences
 │       ├── Services/                # Gmail, GitHub, Auth, SyncCoordinator, AgentDispatch
-│       └── Views/                   # NavigationSplitView, Stream, Detail & WKWebView
+│       └── Views/                   # NavigationSplitView, Stream, Detail & RecycledWKWebView
 ├── Tests/
-│   └── DevTriageTests/              # Concurrency, state machine, and parsing unit tests
+│   └── DispatchAppTests/            # Concurrency, state machine, and parsing unit tests
+├── scripts/
+│   └── package-app.sh               # Release packaging & code-signing script
 ├── docs/
 │   └── designs/
 │       ├── dev_triage_macos.md      # Formal Technical Design RFC
@@ -128,27 +135,27 @@ dev-triage-macos/
 * **Operating System:** macOS 14.0 (Sonoma) or newer.
 * **Toolchain:** Xcode 15+ or Swift 6.0 toolchain.
 * **Google Cloud Project (for Personal OAuth):** A standard Google Cloud Console Desktop OAuth Client ID (for personal Gmail REST API access).
-* **GitHub Personal Access Token or OAuth:** Fine-grained or classic token with `notifications` and `repo` read scopes.
+* **GitHub Personal Access Token:** Classic or fine-grained token with `notifications` and `repo` read scopes.
 
-### Build and Run
+### Build and Package
 
 ```bash
 # Clone the repository
-git clone https://github.com/Shir0o/dev-triage-macos.git
-cd dev-triage-macos
+git clone https://github.com/Shir0o/dispatch-macos.git
+cd dispatch-macos
 
-# Build release binary
-swift build -c release
+# Build debug executable and verify tests build
+swift build --build-tests
 
-# Run test suite
-swift test
+# Package and code-sign release macOS application bundle (Dispatch.app)
+./scripts/package-app.sh
 ```
 
 ---
 
 ## Contributing
 
-We welcome contributions to keep DevTriage clean, fast, and bloat-free. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on code standards, local testing guidelines, and architectural invariants.
+We welcome contributions to keep Dispatch clean, fast, and bloat-free. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on code standards, local testing guidelines, and architectural invariants.
 
 ---
 
