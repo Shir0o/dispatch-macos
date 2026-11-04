@@ -1,10 +1,15 @@
 name: Release
 
-# Publishes a signed Dispatch.dmg to GitHub Releases.
+# Two ways to release:
 #
-# Trigger a release by pushing a semantic-version tag:
-#   git tag v1.0.0 && git push origin v1.0.0
-# or run this workflow manually with a version number (the tag is created for you).
+# 1. Automated (recommended): merge the release PR that Release Please opens on
+#    main. That run creates the tag and GitHub Release, then builds and attaches
+#    the DMG in the same workflow run.
+# 2. Manual: push a semantic-version tag (`git push origin v1.0.1`) or run this
+#    workflow from the Actions tab with a version number.
+#
+# Release Please follows Conventional Commits: `fix:` -> patch, `feat:` -> minor,
+# `feat!:` / `BREAKING CHANGE:` -> major.
 #
 # Optional repository secrets enable Developer ID signing + notarization:
 #   MACOS_CERTIFICATE           base64 of a .p12 "Developer ID Application" certificate
@@ -19,6 +24,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -33,18 +40,50 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  release-please:
+    name: Release Please
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run Release Please
+        id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
   release:
     name: Build and publish DMG
+    needs: release-please
+    if: |
+      always() && (
+        needs.release-please.outputs.release_created == 'true' ||
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+        github.event_name == 'workflow_dispatch'
+      )
     runs-on: macos-15
     timeout-minutes: 45
+    permissions:
+      contents: write
     env:
       HAS_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE != '' }}
       HAS_NOTARY_CREDENTIALS: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
@@ -67,49 +106,43 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          RELEASE_PLEASE_CREATED: ${{ needs.release-please.outputs.release_created }}
+          RELEASE_PLEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
           set -euo pipefail
 
-          if [ "${EVENT_NAME}" = "push" ]; then
+          if [ "${RELEASE_PLEASE_CREATED}" = "true" ] && [ -n "${RELEASE_PLEASE_TAG}" ]; then
+            # Release Please just created this tag and GitHub Release.
+            TAG="${RELEASE_PLEASE_TAG}"
+            SOURCE="release-please"
+          elif [ "${EVENT_NAME}" = "push" ] && [[ "${REF_NAME}" == v* ]]; then
             TAG="${REF_NAME}"
-            VERSION="${TAG#v}"
-            PRERELEASE="false"
+            SOURCE="tag"
           else
-            VERSION="${INPUT_VERSION#v}"
-            TAG="v${VERSION}"
-            PRERELEASE="${INPUT_PRERELEASE:-false}"
+            TAG="v${INPUT_VERSION#v}"
+            SOURCE="dispatch"
           fi
 
+          VERSION="${TAG#v}"
           if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Invalid version '${VERSION}'. Expected semver such as 1.2.3 or 1.2.3-beta.1."
             exit 1
           fi
 
           # Any pre-release suffix (1.2.3-beta.1, 1.2.3-rc.2) is published as a pre-release.
+          PRERELEASE="false"
           if [[ "${VERSION}" == *-* || "${VERSION}" == *+* ]]; then
+            PRERELEASE="true"
+          fi
+          if [ "${SOURCE}" = "dispatch" ] && [ "${INPUT_PRERELEASE:-false}" = "true" ]; then
             PRERELEASE="true"
           fi
 
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "prerelease=${PRERELEASE}" >> "${GITHUB_OUTPUT}"
-          echo "Preparing ${TAG} (version ${VERSION}, prerelease ${PRERELEASE})"
-
-      - name: Ensure the release does not already exist
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          set -euo pipefail
-          if gh release view "${TAG}" >/dev/null 2>&1; then
-            echo "::error::Release ${TAG} already exists."
-            exit 1
-          fi
-          if git rev-parse --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "::error::Tag ${TAG} already exists. Push a new tag or bump the version."
-            exit 1
-          fi
+          echo "source=${SOURCE}" >> "${GITHUB_OUTPUT}"
+          echo "Preparing ${TAG} (version ${VERSION}, prerelease ${PRERELEASE}, source ${SOURCE})"
 
       - name: Import Developer ID certificate
         if: env.HAS_SIGNING_CERT == 'true'
@@ -274,7 +307,6 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
-          PRERELEASE: ${{ steps.version.outputs.prerelease }}
           DMG_NAME: ${{ steps.dmg.outputs.name }}
           SHA256: ${{ steps.checksum.outputs.sha256 }}
           SIGNED_AND_NOTARIZED: ${{ env.HAS_SIGNING_CERT == 'true' && env.HAS_NOTARY_CREDENTIALS == 'true' }}
@@ -282,21 +314,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          PREV_TAG="$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_SHA}^" 2>/dev/null || true)"
-          COMPARE_URL=""
-          if [ -n "${PREV_TAG}" ]; then
-            COMPARE_URL="https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${TAG}"
-          fi
+          INSTALL_NOTES="${RUNNER_TEMP}/install-notes.md"
+          FULL_NOTES="${RUNNER_TEMP}/release-notes.md"
 
           {
-            echo "## Dispatch ${VERSION}"
-            echo ""
-            if [ "${PRERELEASE}" = "true" ]; then
-              echo "> This is a **pre-release** build. Expect rough edges."
-              echo ""
-            fi
-            echo "A native Swift 6 / SwiftUI triage client for Gmail and GitHub."
-            echo ""
             echo "### Installation"
             echo ""
             echo "1. Download \`${DMG_NAME}\` below."
@@ -328,17 +349,24 @@ jobs:
             echo '```'
             echo ""
             echo "SHA-256: \`${SHA256}\`"
+          } > "${INSTALL_NOTES}"
+
+          PREV_TAG="$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_SHA}^" 2>/dev/null || true)"
+          {
+            echo "## Dispatch ${VERSION}"
+            echo ""
+            cat "${INSTALL_NOTES}"
             echo ""
             echo "### What's changed"
             echo ""
-            if [ -n "${COMPARE_URL}" ]; then
-              echo "Full changelog: ${COMPARE_URL}"
+            if [ -n "${PREV_TAG}" ]; then
+              echo "Full changelog: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${TAG}"
             else
               echo "Initial release."
             fi
-          } > "${RUNNER_TEMP}/release-notes.md"
+          } > "${FULL_NOTES}"
 
-          cat "${RUNNER_TEMP}/release-notes.md"
+          cat "${FULL_NOTES}"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -360,19 +388,38 @@ jobs:
         run: |
           set -euo pipefail
 
-          ARGS=(--title "Dispatch ${VERSION}" --notes-file "${RUNNER_TEMP}/release-notes.md")
-          if [ "${PRERELEASE}" = "true" ]; then
-            ARGS+=(--prerelease)
-          fi
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            # Create the tag at the commit this workflow was dispatched from.
-            ARGS+=(--target "${GITHUB_SHA}")
-          fi
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            # Release Please already created the release (with its changelog):
+            # attach the artifacts and prepend install instructions once.
+            echo "Release ${TAG} already exists; attaching artifacts."
+            gh release upload "${TAG}" "${DMG_PATH}" "${DMG_PATH}.sha256" --clobber
 
-          gh release create "${TAG}" \
-            "${DMG_PATH}" \
-            "${DMG_PATH}.sha256" \
-            "${ARGS[@]}"
+            EXISTING_BODY="${RUNNER_TEMP}/existing-body.md"
+            gh release view "${TAG}" --json body -q .body > "${EXISTING_BODY}"
+            if ! grep -q "### Installation" "${EXISTING_BODY}"; then
+              MERGED_NOTES="${RUNNER_TEMP}/merged-notes.md"
+              {
+                cat "${RUNNER_TEMP}/install-notes.md"
+                echo ""
+                cat "${EXISTING_BODY}"
+              } > "${MERGED_NOTES}"
+              gh release edit "${TAG}" --notes-file "${MERGED_NOTES}"
+            fi
+          else
+            ARGS=(--title "Dispatch ${VERSION}" --notes-file "${RUNNER_TEMP}/release-notes.md")
+            if [ "${PRERELEASE}" = "true" ]; then
+              ARGS+=(--prerelease)
+            fi
+            # On manual dispatch the tag may not exist yet: create it at this commit.
+            if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && \
+               ! git rev-parse --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+              ARGS+=(--target "${GITHUB_SHA}")
+            fi
+            gh release create "${TAG}" \
+              "${DMG_PATH}" \
+              "${DMG_PATH}.sha256" \
+              "${ARGS[@]}"
+          fi
 
           echo "Published https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
 
@@ -381,6 +428,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
+          SOURCE: ${{ steps.version.outputs.source }}
           DMG_PATH: ${{ steps.dmg.outputs.path }}
           SHA256: ${{ steps.checksum.outputs.sha256 }}
           SIGNED_AND_NOTARIZED: ${{ env.HAS_SIGNING_CERT == 'true' && env.HAS_NOTARY_CREDENTIALS == 'true' }}
@@ -391,6 +439,7 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| Tag | \`${TAG:-n/a}\` |"
+            echo "| Trigger | ${SOURCE:-n/a} |"
             if [ -n "${DMG_PATH}" ] && [ -f "${DMG_PATH}" ]; then
               echo "| DMG | \`${DMG_PATH}\` ($(du -h "${DMG_PATH}" | cut -f1)) |"
             fi

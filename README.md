@@ -124,9 +124,12 @@ dispatch-macos/
 ├── Package.swift                    # SPM manifest (zero external dependencies)
 ├── Dispatch.entitlements            # App Sandbox & network client entitlements
 ├── Info.plist                       # Bundle metadata & OAuth redirect scheme
+├── version.txt                      # Release version (bumped by Release Please)
+├── release-please-config.json       # Release Please configuration
+├── .release-please-manifest.json    # Last released version
 ├── .github/
 │   └── workflows/
-│       └── release.yml              # Tag-driven DMG build & GitHub Release
+│       └── release.yml              # Release Please + DMG build & GitHub Release
 ├── Sources/
 │   └── DispatchApp/
 │       ├── App/                     # Application lifecycle & composition root
@@ -182,16 +185,16 @@ UNIVERSAL=1 ./scripts/package-app.sh
 
 ## Releasing
 
-Releases are built and published by [`.github/workflows/release.yml`](.github/workflows/release.yml). Push a semantic-version tag:
+Releases are automated with [release-please](https://github.com/googleapis/release-please) and [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
+1. Land changes on `main` using [Conventional Commits](https://www.conventionalcommits.org/): `fix:` → patch, `feat:` → minor, `feat!:` or `BREAKING CHANGE:` → major.
+2. Release Please opens or updates a **release PR** (`chore: release x.y.z`) that bumps `version.txt` and `Info.plist` and updates `CHANGELOG.md`.
+3. Merge the release PR. The same workflow run runs the test suite, builds a universal `Dispatch.app`, stamps the version, signs it, verifies `Dispatch-x.y.z.dmg`, and attaches the DMG plus a SHA-256 checksum to the GitHub Release.
 
-The workflow runs the test suite, builds a universal `Dispatch.app`, stamps the version from the tag into the bundle, signs it, produces `Dispatch-1.0.0.dmg` plus a SHA-256 checksum, verifies the disk image contents, and publishes both as a GitHub Release. Suffixed tags such as `v1.1.0-beta.1` are published as pre-releases.
+> [!NOTE]
+> If release PRs are not being opened, enable **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**.
 
-You can also trigger a release from the Actions tab with only a version number; the workflow creates the tag for you.
+Manual releases are still supported: push a `v<semver>` tag (`git tag v1.0.1 && git push origin v1.0.1`), or run the **Release** workflow from the Actions tab with a version number. Suffixed versions such as `v1.1.0-beta.1` are published as pre-releases.
 
 By default the DMG is ad-hoc signed. To enable Developer ID signing and Apple notarization, add these repository secrets:
 

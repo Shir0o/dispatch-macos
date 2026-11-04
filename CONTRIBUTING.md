@@ -43,5 +43,7 @@ swift test --no-parallel
 2. Keep diffs surgical and focused directly on the issue being addressed.
 3. Open a pull request against `main`. Ensure all GitHub Actions CI checks pass.
 
+Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/): `fix:` bumps the patch version, `feat:` bumps the minor version, and `feat!:` or a `BREAKING CHANGE:` footer bumps the major version. Release Please uses these to build the changelog and the release PR.
+
 ### 4. Releasing
-Releases are automated. Push a `v<semver>` tag (or dispatch the Release workflow with a version) and `.github/workflows/release.yml` builds, tests, signs, and publishes the DMG. See [Releasing](README.md#releasing) for the full process and signing secrets.
+Releases are automated. Release Please opens a release PR on `main`; merging it tags the version, builds the DMG, and publishes the GitHub Release. See [Releasing](README.md#releasing) for details and signing secrets.
