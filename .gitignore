@@ -8,6 +8,7 @@
 
 # Swift Package Manager & Xcode
 .build/
+*.app/
 Packages/
 Package.pins
 Package.resolved
