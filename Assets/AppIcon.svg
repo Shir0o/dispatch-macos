@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Dispatch app icon, concept B "Router fork": one stream routed into two lanes (Gmail / GitHub). -->
+  <!-- Drop shadow is added by scripts/make-app-icon.sh, not here. -->
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FBF9F4"/>
+      <stop offset="1" stop-color="#E8E3D8"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#body)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#000000" stroke-opacity="0.06" stroke-width="3"/>
+  <g fill="none" stroke="#14213A" stroke-width="56" stroke-linecap="round">
+    <path d="M300 512 H450 C570 512 590 340 724 340"/>
+    <path d="M450 512 C570 512 590 684 724 684"/>
+  </g>
+  <circle cx="300" cy="512" r="62" fill="#14213A"/>
+  <circle cx="724" cy="340" r="66" fill="#F2622A"/>
+  <circle cx="724" cy="684" r="46" fill="#F4F1EA" stroke="#14213A" stroke-width="40"/>
+</svg>

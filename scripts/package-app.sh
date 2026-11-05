@@ -58,6 +58,7 @@ cp "${BIN_PATH}" "${MACOS_DIR}/Dispatch"
 chmod +x "${MACOS_DIR}/Dispatch"
 
 cp "Info.plist" "${CONTENTS_DIR}/Info.plist"
+cp "Assets/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
 
 # Stamp the release version into the assembled bundle without touching the
 # checked-in Info.plist (the tag remains the single source of truth).
