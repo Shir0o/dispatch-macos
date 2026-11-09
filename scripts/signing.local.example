@@ -1,0 +1,20 @@
+# Copy this file to signing.local to sign local builds with your own
+# certificate. The copy is git-ignored and must not be committed.
+#
+# Without it, package-app.sh signs ad-hoc, so macOS treats every rebuild as a
+# different application and asks for file and network permissions again. The
+# release workflow passes its own identity, so this file never affects releases.
+#
+# List your signing identities with:
+#
+#   security find-identity -v -p codesigning
+#
+# Use the full name when it is unique, for example:
+#
+#   SIGN_IDENTITY="Apple Development: Your Name (ABCDE12345)"
+#
+# If two certificates share that name, codesign fails with "ambiguous" and you
+# must use the 40-character SHA-1 fingerprint printed by find-identity, for
+# example:
+#
+#   SIGN_IDENTITY="0123456789ABCDEF0123456789ABCDEF01234567"

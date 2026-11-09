@@ -180,7 +180,7 @@ UNIVERSAL=1 ./scripts/package-app.sh
 ./scripts/create-dmg.sh
 ```
 
-`package-app.sh` accepts `VERSION`, `BUILD_NUMBER`, `UNIVERSAL=1`, `BUILD_DIR`, and `SIGN_IDENTITY` environment overrides. `create-dmg.sh` writes a compressed `Dispatch-<version>.dmg` next to the app bundle, with an `Applications` shortcut for drag-to-install.
+`package-app.sh` accepts `VERSION`, `BUILD_NUMBER`, `UNIVERSAL=1`, `BUILD_DIR`, and `SIGN_IDENTITY` environment overrides. For local signing, copy `scripts/signing.local.example` to `scripts/signing.local` and set your certificate identity there; that file is git-ignored, and without it builds stay ad-hoc signed like CI. `create-dmg.sh` writes a compressed `Dispatch-<version>.dmg` next to the app bundle, with an `Applications` shortcut for drag-to-install.
 
 ---
 

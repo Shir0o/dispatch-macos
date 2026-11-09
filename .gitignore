@@ -30,3 +30,6 @@ snapshot.json
 build/
 *.dmg
 *.dmg.sha256
+
+# Local signing identity (copy scripts/signing.local.example)
+/scripts/signing.local

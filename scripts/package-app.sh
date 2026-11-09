@@ -8,7 +8,8 @@
 #   UNIVERSAL       Set to 1 to build a universal arm64 + x86_64 binary
 #   VERSION         CFBundleShortVersionString to stamp into the bundle
 #   BUILD_NUMBER    CFBundleVersion to stamp into the bundle
-#   SIGN_IDENTITY   codesign identity (default: "-" for ad-hoc signing)
+#   SIGN_IDENTITY   codesign identity (default: value from scripts/signing.local,
+#                   falling back to "-" for ad-hoc signing)
 #
 set -euo pipefail
 
@@ -23,6 +24,15 @@ APP_BUNDLE="${BUILD_DIR}/Dispatch.app"
 UNIVERSAL="${UNIVERSAL:-0}"
 VERSION="${VERSION:-}"
 BUILD_NUMBER="${BUILD_NUMBER:-}"
+
+# Optional, git-ignored local signing override (see signing.local.example).
+# An explicit SIGN_IDENTITY from the environment still wins, which is how the
+# release workflow selects its Developer ID identity.
+if [ -z "${SIGN_IDENTITY:-}" ] && [ -f "${SCRIPT_DIR}/signing.local" ]; then
+    # shellcheck source=/dev/null
+    . "${SCRIPT_DIR}/signing.local"
+fi
+
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
 BUILD_ARGS=(-c "${CONFIGURATION}")
