@@ -22,6 +22,17 @@ struct DispatchApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     triageStore.saveSnapshotSync()
                 }
+                .onReceive(NotificationCenter.default.publisher(for: .dispatchGitHubBackfillRequested)) { _ in
+                    let coordinator = syncCoordinator
+                    let repositories = preferencesStore.normalizedTrackedRepositories
+                    let login = preferencesStore.githubUsername
+                    Task {
+                        await coordinator?.performGitHubBackfill(
+                            repositories: repositories,
+                            login: login.isEmpty ? nil : login
+                        )
+                    }
+                }
         }
         .defaultSize(width: 1150, height: 720)
 
@@ -73,6 +84,15 @@ struct DispatchApp: App {
                     triageStore?.setItems(items, for: source)
                 }
             }
+            await coordinator.setOnBackfillUpdated { [weak triageStore] items in
+                Task { @MainActor in
+                    triageStore?.setGitHubBackfill(items)
+                }
+            }
+            await coordinator.setBackfillConfiguration(
+                repositories: preferencesStore.normalizedTrackedRepositories,
+                login: preferencesStore.githubUsername.isEmpty ? nil : preferencesStore.githubUsername
+            )
             await coordinator.start()
         }
     }

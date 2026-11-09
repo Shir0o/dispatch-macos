@@ -151,6 +151,38 @@ public struct SettingsView: View {
                 .padding(.vertical, 4)
             }
 
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Open Work Backfill")
+                        .font(.headline)
+
+                    TextField("owner/repo", text: trackedRepositoriesBinding, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(3...6)
+
+                    Text("One repository per line. Dispatch loads every open issue and pull request from these repositories at launch. Leave empty to include everything you are involved with.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack(spacing: 12) {
+                        Button("Backfill Now") {
+                            NotificationCenter.default.post(
+                                name: .dispatchGitHubBackfillRequested,
+                                object: nil
+                            )
+                        }
+                        .disabled(preferencesStore.githubPAT.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        if !preferencesStore.githubUsername.isEmpty {
+                            Text("@\(preferencesStore.githubUsername)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
             if let errorMessage {
                 Text(errorMessage)
                     .font(.caption)
@@ -228,6 +260,18 @@ public struct SettingsView: View {
 
     // MARK: - Actions
 
+    private var trackedRepositoriesBinding: Binding<String> {
+        Binding(
+            get: { preferencesStore.trackedRepositories.joined(separator: "\n") },
+            set: { newValue in
+                preferencesStore.trackedRepositories = newValue
+                    .split(whereSeparator: { $0 == "\n" || $0 == "," })
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            }
+        )
+    }
+
     private func signInWithGoogle() async {
         isSigningInGoogle = true
         errorMessage = nil
@@ -282,7 +326,12 @@ public struct SettingsView: View {
         do {
             let result = try await authService.validateGitHubPAT(token: token)
             preferencesStore.githubPAT = token
+            preferencesStore.githubUsername = result.username
             gitHubStatus = "Connected as @\(result.username) (Scopes: \(result.scopes.joined(separator: ", ")))"
+            NotificationCenter.default.post(
+                name: .dispatchGitHubBackfillRequested,
+                object: nil
+            )
         } catch {
             errorMessage = "GitHub PAT validation failed: \(error.localizedDescription)"
         }

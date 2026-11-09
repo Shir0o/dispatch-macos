@@ -70,6 +70,35 @@ public struct TriageItem: Identifiable, Codable, Sendable, Hashable {
     }
 }
 
+extension TriageItem {
+    /// Stable identity of the underlying GitHub issue/PR or mail thread.
+    ///
+    /// Notification items are keyed by GitHub's notification thread ID, while
+    /// backfilled items are keyed by repository and number. Both resolve to the
+    /// same canonical key when they refer to the same issue or pull request, so
+    /// the two feeds can be merged without creating duplicates.
+    public var canonicalKey: String {
+        switch kind {
+        case .email(let threadId, _, _):
+            return "gmail:\(threadId)"
+        case .gitHubIssue(let number, let repo, _, _):
+            return "gh:\(repo)#\(number)"
+        case .gitHubPullRequest(let number, let repo, _, _, _):
+            return "gh:\(repo)#\(number)"
+        case .gitHubNotification(let threadId, _):
+            return "gh:thread:\(threadId)"
+        }
+    }
+
+    /// `true` for items synthesised from the open issue/pull request backfill.
+    ///
+    /// These have no GitHub notification thread ID, so dismissing them must stay
+    /// local instead of calling the notification endpoints.
+    public var isBackfillDerived: Bool {
+        source == .gitHub && id.hasPrefix("gh:")
+    }
+}
+
 public struct GitHubIssueDetail: Codable, Sendable, Hashable {
     public let repo: String
     public let number: Int
