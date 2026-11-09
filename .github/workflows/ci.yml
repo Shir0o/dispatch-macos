@@ -1,0 +1,48 @@
+name: CI
+
+# Pull-request gate for main. The ruleset "main protection" requires the
+# "Build and test" check, so keep that job name stable.
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        id: toolchain
+        run: |
+          swift --version
+          echo "version=$(swift --version 2>&1 | head -1 | tr ' ' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ steps.toolchain.outputs.version }}-
+
+      - name: Build (Swift 6 strict concurrency)
+        run: swift build --build-tests
+
+      - name: Test
+        run: swift test --no-parallel
