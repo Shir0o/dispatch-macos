@@ -22,6 +22,16 @@ public actor SyncCoordinator {
     // Update callback closure
     public var onItemsUpdated: (@Sendable ([TriageItem], TriageSource) -> Void)?
 
+    // Backfill callback closure (open issues / pull requests)
+    public var onBackfillUpdated: (@Sendable ([TriageItem]) -> Void)?
+
+    // Backfill scope, configured from preferences before `start()`.
+    private var backfillRepositories: [String] = []
+    private var backfillLogin: String?
+    private var hasCompletedGitHubBackfill = false
+    private var isBackfilling = false
+    private var pollCycleCount = 0
+
     // Stream continuations for consumers subscribing via AsyncStream
     private var streamContinuations: [UUID: AsyncStream<([TriageItem], TriageSource)>.Continuation] = [:]
     private var itemStreamContinuations: [UUID: AsyncStream<[TriageItem]>.Continuation] = [:]
@@ -56,8 +66,10 @@ public actor SyncCoordinator {
         startNotificationObservers()
         startPollingLoop()
 
-        // Trigger immediate baseline bootstrap sync
-        await performSyncCycle()
+        // Bootstrap live notifications and pre-existing open work in parallel.
+        async let bootstrap: Void = performSyncCycle()
+        async let backfill: Void = backfillGitHubIfNeeded()
+        _ = await (bootstrap, backfill)
     }
 
     public func stop() async {
@@ -93,6 +105,55 @@ public actor SyncCoordinator {
 
     public func setOnItemsUpdated(_ callback: (@Sendable ([TriageItem], TriageSource) -> Void)?) {
         self.onItemsUpdated = callback
+    }
+
+    public func setOnBackfillUpdated(_ callback: (@Sendable ([TriageItem]) -> Void)?) {
+        self.onBackfillUpdated = callback
+    }
+
+    // MARK: - Open Work Backfill
+
+    /// Configures which repositories the backfill scans. An empty list means
+    /// "every open issue and pull request the user is involved with".
+    public func setBackfillConfiguration(repositories: [String], login: String?) {
+        self.backfillRepositories = repositories
+        self.backfillLogin = login
+    }
+
+    /// Fetches pre-existing open issues and pull requests and publishes them to
+    /// `onBackfillUpdated`. Safe to call repeatedly; the store merges by
+    /// canonical issue/PR identity.
+    public func performGitHubBackfill(
+        repositories: [String]? = nil,
+        login: String? = nil
+    ) async {
+        if let repositories {
+            backfillRepositories = repositories
+        }
+        if let login {
+            backfillLogin = login
+        }
+
+        guard isRunning, !isSleeping, isNetworkAvailable, !isBackfilling else { return }
+        isBackfilling = true
+        defer { isBackfilling = false }
+
+        do {
+            let items = try await gitHubService.fetchOpenIssuesAndPullRequests(
+                repositories: backfillRepositories,
+                login: backfillLogin
+            )
+            hasCompletedGitHubBackfill = true
+            onBackfillUpdated?(items)
+        } catch {
+            // Missing token, rate limit, or offline. Retried on the next launch
+            // or manual trigger; live notifications continue unaffected.
+        }
+    }
+
+    private func backfillGitHubIfNeeded() async {
+        guard !hasCompletedGitHubBackfill else { return }
+        await performGitHubBackfill()
     }
 
     // MARK: - AsyncStream Publishers
@@ -143,8 +204,17 @@ public actor SyncCoordinator {
                 }
                 guard let self = self else { break }
                 await self.performSyncCycle()
+                await self.refreshBackfillIfDue()
             }
         }
+    }
+
+    /// Re-runs the open work backfill roughly every 15 minutes (20 polls) so
+    /// closed issues and merged pull requests drop out of the workspace.
+    private func refreshBackfillIfDue() async {
+        pollCycleCount += 1
+        guard pollCycleCount % 20 == 0 else { return }
+        await performGitHubBackfill()
     }
 
     // MARK: - Sync Execution

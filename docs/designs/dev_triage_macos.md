@@ -148,6 +148,12 @@ flowchart TD
   1. Polls `/notifications` including the HTTP `If-None-Match` header holding the last known `ETag`.
   2. On HTTP 304 (`Not Modified`), zero rate limit quota is consumed and the polling cycle completes immediately.
   3. On HTTP 200, parses notification threads. For pull request review and CI notifications, queries `/repos/{owner}/{repo}/commits/{ref}/check-runs` via REST v3 on demand to determine CI check suite status.
+  4. `/notifications` only returns unread threads, so it cannot surface work that predates the install.
+* **GitHub Open Work Backfill (Cold Start):**
+  1. On launch (in parallel with the first notification poll), fetches every open issue and pull request — `GET /repos/{owner}/{repo}/issues?state=open` for each repository in **Settings → Open Work Backfill**, or `GET /issues?filter=all&state=open` when the repository list is empty.
+  2. Follows `Link: rel="next"` pagination up to three pages per source (100 items per page) and tolerates HTTP 404 per repository.
+  3. Emits items through a dedicated `onBackfillUpdated` callback, separate from the notification stream.
+  4. Re-runs roughly every 15 minutes so closed issues and merged pull requests drop out, and on demand from the Settings "Backfill Now" button.
 * **System Lifecycle Integration:**
   * Subscribes to `NSWorkspace.willSleepNotification` to cancel pending poll timers before laptop sleep.
   * Subscribes to `NSWorkspace.didWakeNotification` to immediately trigger a sync cycle upon laptop wake.
@@ -157,10 +163,12 @@ flowchart TD
 #### C. In-Memory Store & Triage Model (`TriageStore`)
 * **Architecture:** `@Observable @MainActor final class TriageStore`. Instantiated at the root composition root (`DevTriageApp.swift`) and injected into the environment.
 * **Collection Management:** Maintains separate arrays for `gmailItems` and `gitHubItems`. Bounded to a maximum of 500 items per stream using simple array prefix slicing (`items = Array(items.prefix(500))`) to cap memory footprint without complex eviction data structures.
+* **Two-Feed Merge:** `gitHubItems` is the union of the live notification feed and the open work backfill. Items are keyed by `canonicalKey` (`gh:{repo}#{number}` for issues and PRs, `gh:thread:{id}` for notifications), so an unread notification supersedes the backfilled copy of the same issue instead of duplicating it. Replacing the notification feed retains backfilled items, and local star, read, and archived state survives every merge.
 * **Optimistic Local Mutations & Rollback:**
   * When `e` (archive) is pressed on an email thread, the item is removed immediately from the visible list and an asynchronous task calls `GmailService.archiveThread(id:)` via `users.threads.modify(threadId: ..., removeLabelIds: ["INBOX"])`.
   * If the network call fails after exponential backoff, the item is restored to the store and an unobtrusive notification bar appears.
   * For GitHub notifications, `e` marks the thread as read (`PATCH /notifications/threads/{id}`) without touching the public issue or PR state.
+  * Backfilled open issues and pull requests have no notification thread, so `e` and `#` only hide them locally and record their canonical key as a tombstone. Nothing is written back to GitHub, preserving the non-destructive invariant, and the next backfill does not resurrect the item. Tombstones are persisted in the snapshot.
   * When `#` or `Delete` (trash) is pressed:
     * Gmail: Calls `GmailService.trashThread(id:)` via `users.threads.trash(id: item.id)`.
     * GitHub: Calls `GitHubService.unsubscribeNotification(threadId: item.id)` via `DELETE /notifications/threads/{id}/subscription` and marks read locally.
@@ -401,6 +409,7 @@ struct AgentDispatchPayload: Sendable {
 * **Type / Scope:** GitHub REST API v3 Engine
 * **Specification:** Client conforming to `Sendable`. Implements:
   - `fetchNotifications(lastETag:)`: Polls `/notifications` with `If-None-Match`. Returns `.notModified` on HTTP 304, consuming zero quota.
+  - `fetchOpenIssuesAndPullRequests(repositories:login:)`: Fetches every open issue and PR for the tracked repositories (or `GET /issues?filter=all&state=open` when none are configured), following `Link: rel="next"` pagination and mapping each record to a stable backfill item ID.
   - `fetchCheckRuns(owner:repo:ref:)`: REST v3 check runs for CI alerts.
   - `fetchIssueDetails(repo:number:)`: On-demand retrieval of issue body and comment timeline.
   - `dismissNotification(threadId:)`: Executes `PATCH /notifications/threads/{threadId}`.
@@ -408,7 +417,7 @@ struct AgentDispatchPayload: Sendable {
 
 #### 8. `Sources/DevTriage/Services/SyncCoordinator.swift` (Create)
 * **Type / Scope:** Concurrency & Background Polling Actor
-* **Specification:** Swift `actor` orchestrating polling cycles. Runs continuous 45s timer loop without jitter. Subscribes to `NWPathMonitor` for connection status and `NSWorkspace.willSleepNotification` / `didWakeNotification` to suspend during sleep and perform instant wake updates. Dispatches fresh items to `TriageStore` on `@MainActor`.
+* **Specification:** Swift `actor` orchestrating polling cycles. Runs continuous 45s timer loop without jitter. Subscribes to `NWPathMonitor` for connection status and `NSWorkspace.willSleepNotification` / `didWakeNotification` to suspend during sleep and perform instant wake updates. Dispatches fresh items to `TriageStore` on `@MainActor`. Runs the open work backfill at launch and every 20 poll cycles, publishing results through `onBackfillUpdated(_:)` so backfilled items never replace the live notification feed.
 
 #### 9. `Sources/DevTriage/Services/AgentDispatchService.swift` (Create)
 * **Type / Scope:** CLI Coding Agent Context Dispatcher
@@ -416,7 +425,7 @@ struct AgentDispatchPayload: Sendable {
 
 #### 10. `Sources/DevTriage/State/PreferencesStore.swift` (Create)
 * **Type / Scope:** User Preferences Management
-* **Specification:** `@Observable final class PreferencesStore`. Manages persisted settings via `UserDefaults`: Google Client ID, GitHub PAT, default local projects directory (`~/Projects`), and preferred terminal application (`Terminal`, `iTerm2`, `Ghostty`, `VSCode`).
+* **Specification:** `@Observable final class PreferencesStore`. Manages persisted settings via `UserDefaults`: Google Client ID, GitHub PAT, authenticated GitHub login (used for assignment flags), tracked repositories for the open work backfill, default local projects directory (`~/Projects`), and preferred terminal application (`Terminal`, `iTerm2`, `Ghostty`, `VSCode`).
 
 #### 11. `Sources/DevTriage/Views/MainSplitView.swift` (Create)
 * **Type / Scope:** 3-Column Root View Layout

@@ -29,11 +29,21 @@ public struct SnapshotData: Codable, Sendable {
     public let gmailItems: [TriageItem]
     public let gitHubItems: [TriageItem]
     public let savedAt: Date
+    /// Canonical keys of GitHub items dismissed locally. Backfilled issues and
+    /// pull requests have no notification thread, so their dismissal only lives
+    /// on this device.
+    public let dismissedGitHubKeys: [String]?
 
-    public init(gmailItems: [TriageItem], gitHubItems: [TriageItem], savedAt: Date = Date()) {
+    public init(
+        gmailItems: [TriageItem],
+        gitHubItems: [TriageItem],
+        savedAt: Date = Date(),
+        dismissedGitHubKeys: [String]? = nil
+    ) {
         self.gmailItems = gmailItems
         self.gitHubItems = gitHubItems
         self.savedAt = savedAt
+        self.dismissedGitHubKeys = dismissedGitHubKeys
     }
 }
 
@@ -75,6 +85,10 @@ public final class TriageStore {
     // MARK: - Private State
 
     private var toastDismissTask: Task<Void, Never>?
+    /// Canonical keys of GitHub items dismissed locally (`e` / `#`). Backfilled
+    /// issues have no notification thread ID, so this tombstone keeps them from
+    /// reappearing on the next backfill.
+    private var dismissedGitHubKeys: Set<String> = []
 
     // MARK: - Computed Properties
 
@@ -150,18 +164,85 @@ public final class TriageStore {
     // MARK: - Ingestion
 
     public func setItems(_ items: [TriageItem], for source: TriageSource) {
-        let bounded = Array(items.prefix(500))
         switch source {
         case .gmail:
-            self.gmailItems = bounded
+            self.gmailItems = Array(items.prefix(500))
         case .gitHub:
-            self.gitHubItems = bounded
+            // Live notifications replace the previous notification set, while
+            // backfilled open work is retained until the next backfill refresh.
+            let retainedBackfill = gitHubItems.filter { $0.isBackfillDerived }
+            self.gitHubItems = Array(
+                mergedGitHubItems(notifications: items, backfill: retainedBackfill).prefix(500)
+            )
         }
 
         // Maintain selection validity
         if selectedItemId == nil || !activeItems.contains(where: { $0.id == selectedItemId }) {
             selectedItemId = activeItems.first?.id
         }
+    }
+
+    /// Merges backfilled open issues and pull requests with the live notification feed.
+    ///
+    /// Items are deduplicated by `canonicalKey`, so an unread notification for
+    /// issue #42 supersedes the backfilled copy of the same issue instead of
+    /// showing twice. Star, archived, and local unread state survive the merge.
+    public func setGitHubBackfill(_ items: [TriageItem]) {
+        // Tombstones only matter while the corresponding open item is still in
+        // the feed; pruning here keeps the set bounded.
+        dismissedGitHubKeys.formIntersection(Set(items.map(\.canonicalKey)))
+
+        let notifications = gitHubItems.filter { !$0.isBackfillDerived }
+        self.gitHubItems = Array(
+            mergedGitHubItems(notifications: notifications, backfill: items).prefix(500)
+        )
+
+        if selectedItemId == nil || !activeItems.contains(where: { $0.id == selectedItemId }) {
+            selectedItemId = activeItems.first?.id
+        }
+    }
+
+    private func mergedGitHubItems(
+        notifications: [TriageItem],
+        backfill: [TriageItem]
+    ) -> [TriageItem] {
+        let existingByID = gitHubItems.reduce(into: [String: TriageItem]()) { partial, item in
+            if partial[item.id] == nil {
+                partial[item.id] = item
+            }
+        }
+        let existingByKey = gitHubItems.reduce(into: [String: TriageItem]()) { partial, item in
+            if partial[item.canonicalKey] == nil {
+                partial[item.canonicalKey] = item
+            }
+        }
+
+        let notificationKeys = Set(notifications.map(\.canonicalKey))
+        var seenIDs = Set<String>()
+        var merged: [TriageItem] = []
+
+        for var item in notifications + backfill {
+            let key = item.canonicalKey
+            guard !dismissedGitHubKeys.contains(key) else { continue }
+
+            // A live notification always wins over the backfilled copy.
+            if item.isBackfillDerived, notificationKeys.contains(key) { continue }
+
+            guard seenIDs.insert(item.id).inserted else { continue }
+
+            if let existing = existingByID[item.id] ?? existingByKey[key] {
+                item.isStarred = existing.isStarred
+                item.isArchived = existing.isArchived
+                // Backfilled items always arrive read; keep a local "mark unread".
+                if item.isBackfillDerived {
+                    item.isUnread = existing.isUnread
+                }
+            }
+
+            merged.append(item)
+        }
+
+        return merged
     }
 
     // MARK: - Keyboard Selection Navigation
@@ -209,6 +290,7 @@ public final class TriageStore {
             let snapshot = try decoder.decode(SnapshotData.self, from: data)
             self.gmailItems = Array(snapshot.gmailItems.prefix(500))
             self.gitHubItems = Array(snapshot.gitHubItems.prefix(500))
+            self.dismissedGitHubKeys = Set(snapshot.dismissedGitHubKeys ?? [])
 
             if selectedItemId == nil {
                 selectedItemId = activeItems.first?.id
@@ -222,7 +304,8 @@ public final class TriageStore {
         let snapshot = SnapshotData(
             gmailItems: Array(gmailItems.prefix(500)),
             gitHubItems: Array(gitHubItems.prefix(500)),
-            savedAt: Date()
+            savedAt: Date(),
+            dismissedGitHubKeys: Array(dismissedGitHubKeys)
         )
 
         do {
@@ -245,6 +328,11 @@ public final class TriageStore {
     // MARK: - Optimistic Actions
 
     public func archive(item: TriageItem) {
+        if item.isBackfillDerived {
+            dismissBackfillItemLocally(item)
+            return
+        }
+
         let originalIndex: Int?
         let originalSource = item.source
 
@@ -294,6 +382,11 @@ public final class TriageStore {
     }
 
     public func trash(item: TriageItem) {
+        if item.isBackfillDerived {
+            dismissBackfillItemLocally(item)
+            return
+        }
+
         let originalIndex: Int?
         let originalSource = item.source
 
@@ -363,6 +456,21 @@ public final class TriageStore {
     public func markUnread(item: TriageItem) {
         let newUnread = !item.isUnread
         mutateItem(id: item.id) { $0.isUnread = newUnread }
+    }
+
+    /// Hides a backfilled open issue/PR locally without mutating public repository
+    /// state. The canonical key is tombstoned so the next backfill does not
+    /// resurrect it.
+    private func dismissBackfillItemLocally(_ item: TriageItem) {
+        dismissedGitHubKeys.insert(item.canonicalKey)
+
+        if let index = gitHubItems.firstIndex(where: { $0.id == item.id }) {
+            gitHubItems.remove(at: index)
+        }
+
+        if selectedItemId == item.id {
+            selectedItemId = activeItems.first?.id
+        }
     }
 
     private func mutateItem(id: String, mutator: (inout TriageItem) -> Void) {

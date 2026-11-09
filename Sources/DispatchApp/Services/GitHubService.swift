@@ -244,6 +244,250 @@ public final class GitHubService: Sendable {
         return (items: items, newETag: rawETag, notModified: false)
     }
 
+    // MARK: - Open Work Backfill
+
+    /// Fetches every open issue and pull request for the supplied repositories.
+    ///
+    /// Unlike `/notifications` (which only returns unread threads), this is used
+    /// once at launch to seed the workspace with work that already existed
+    /// before Dispatch was installed.
+    ///
+    /// - Parameters:
+    ///   - repositories: `owner/repo` entries to scan. When empty, falls back to
+    ///     `/issues?filter=all`, i.e. every open issue and pull request the
+    ///     authenticated user is involved with.
+    ///   - login: Authenticated user's login, used to flag items assigned to them.
+    public func fetchOpenIssuesAndPullRequests(
+        repositories: [String] = [],
+        login: String? = nil,
+        maxPagesPerSource: Int = 3
+    ) async throws -> [TriageItem] {
+        let normalized = Self.normalizeRepositories(repositories)
+
+        if normalized.isEmpty {
+            let pages = try await requestAllPages(
+                endpoint: "issues?filter=all&state=open&sort=updated&per_page=100",
+                context: "open issues",
+                maxPages: maxPagesPerSource
+            )
+            return try Self.decodeOpenWork(pages: pages, login: login)
+        }
+
+        return try await withThrowingTaskGroup(of: [TriageItem].self) { group in
+            for repo in normalized {
+                group.addTask {
+                    let pages = try await self.requestAllPages(
+                        endpoint: "repos/\(repo)/issues?state=open&sort=updated&per_page=100",
+                        context: "open issues for \(repo)",
+                        maxPages: maxPagesPerSource
+                    )
+                    return try Self.decodeOpenWork(pages: pages, login: login)
+                }
+            }
+
+            var items: [TriageItem] = []
+            for try await batch in group {
+                items.append(contentsOf: batch)
+            }
+            return items.sorted(by: Self.newestFirst)
+        }
+    }
+
+    /// Normalizes user-provided `owner/repo` strings, dropping blanks and duplicates.
+    public static func normalizeRepositories(_ raw: [String]) -> [String] {
+        var seen = Set<String>()
+        return raw.compactMap { entry in
+            let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+            let parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
+            guard parts.count == 2 else { return nil }
+            let repo = parts.joined(separator: "/")
+            return seen.insert(repo.lowercased()).inserted ? repo : nil
+        }
+    }
+
+    // MARK: - Backfill HTTP & Parsing Helpers
+
+    private func requestAllPages(
+        endpoint: String,
+        context: String,
+        maxPages: Int
+    ) async throws -> [Data] {
+        var pages: [Data] = []
+        var next: String? = endpoint
+        var pageCount = 0
+
+        while let current = next, pageCount < maxPages {
+            let (data, response) = try await makeRequest(endpoint: current)
+            if response.statusCode == 404 {
+                return pages
+            }
+            try Self.validate(response: response, data: data, context: context)
+            pages.append(data)
+            pageCount += 1
+            next = Self.nextPageURL(from: response)
+        }
+
+        return pages
+    }
+
+    private static func validate(
+        response: HTTPURLResponse,
+        data: Data,
+        context: String
+    ) throws {
+        switch response.statusCode {
+        case 200...299:
+            return
+        case 401:
+            throw GitHubError.unauthorized
+        case 403:
+            var resetDate: Date?
+            if let header = response.value(forHTTPHeaderField: "x-ratelimit-reset"),
+               let epoch = Double(header) {
+                resetDate = Date(timeIntervalSince1970: epoch)
+            }
+            throw GitHubError.forbidden(rateLimitReset: resetDate)
+        case 404:
+            throw GitHubError.notFound(context)
+        default:
+            let message = String(data: data, encoding: .utf8) ?? "HTTP \(response.statusCode)"
+            throw GitHubError.invalidResponse(statusCode: response.statusCode, message: message)
+        }
+    }
+
+    private static func nextPageURL(from response: HTTPURLResponse) -> String? {
+        guard let header = response.value(forHTTPHeaderField: "Link") else { return nil }
+
+        for link in header.split(separator: ",") {
+            let segments = link.split(separator: ";")
+            guard segments.count > 1 else { continue }
+            let hasNext = segments.dropFirst().contains { segment in
+                segment.replacingOccurrences(of: " ", with: "").contains("rel=\"next\"")
+            }
+            guard hasNext else { continue }
+
+            let target = segments[0].trimmingCharacters(in: .whitespaces)
+            guard target.hasPrefix("<"), target.hasSuffix(">") else { continue }
+            return String(target.dropFirst().dropLast())
+        }
+
+        return nil
+    }
+
+    private static func decodeOpenWork(
+        pages: [Data],
+        login: String?
+    ) throws -> [TriageItem] {
+        struct UserPayload: Decodable {
+            let login: String
+            let avatar_url: String?
+        }
+
+        struct LabelPayload: Decodable {
+            let name: String
+        }
+
+        struct PullRequestReference: Decodable {
+            let url: String?
+        }
+
+        struct IssuePayload: Decodable {
+            let number: Int
+            let title: String
+            let state: String
+            let draft: Bool?
+            let user: UserPayload?
+            let labels: [LabelPayload]?
+            let assignees: [UserPayload]?
+            let updated_at: String
+            let html_url: String
+            let repository_url: String
+            let pull_request: PullRequestReference?
+        }
+
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plainFormatter = ISO8601DateFormatter()
+
+        var items: [TriageItem] = []
+
+        for page in pages {
+            let payload: [IssuePayload]
+            do {
+                payload = try JSONDecoder().decode([IssuePayload].self, from: page)
+            } catch {
+                throw GitHubError.decodingError(error.localizedDescription)
+            }
+
+            for issue in payload {
+                guard let repo = repositoryName(from: issue.repository_url),
+                      let webURL = URL(string: issue.html_url) else { continue }
+
+                let date = fractionalFormatter.date(from: issue.updated_at)
+                    ?? plainFormatter.date(from: issue.updated_at)
+                    ?? Date()
+
+                let isPullRequest = issue.pull_request != nil
+                let labels = issue.labels?.map(\.name) ?? []
+                let isAssignedToMe: Bool = {
+                    guard let login, !login.isEmpty else { return false }
+                    return (issue.assignees ?? []).contains {
+                        $0.login.caseInsensitiveCompare(login) == .orderedSame
+                    }
+                }()
+
+                let kind: TriageKind = isPullRequest
+                    ? .gitHubPullRequest(
+                        number: issue.number,
+                        repo: repo,
+                        isDraft: issue.draft ?? false,
+                        reviewStatus: .none,
+                        ciStatus: .neutral
+                    )
+                    : .gitHubIssue(
+                        number: issue.number,
+                        repo: repo,
+                        state: issue.state,
+                        isAssignedToMe: isAssignedToMe
+                    )
+
+                let idPrefix = isPullRequest ? "gh:pr:" : "gh:issue:"
+
+                items.append(
+                    TriageItem(
+                        id: "\(idPrefix)\(repo)#\(issue.number)",
+                        source: .gitHub,
+                        title: issue.title,
+                        authorName: issue.user?.login ?? "ghost",
+                        authorAvatarURL: issue.user?.avatar_url.flatMap { URL(string: $0) },
+                        timestamp: date,
+                        isUnread: false,
+                        isStarred: false,
+                        isArchived: false,
+                        tags: labels,
+                        kind: kind,
+                        webURL: webURL
+                    )
+                )
+            }
+        }
+
+        return items.sorted(by: newestFirst)
+    }
+
+    private static func repositoryName(from repositoryURL: String) -> String? {
+        let parts = repositoryURL.split(separator: "/")
+        guard parts.count >= 2 else { return nil }
+        return "\(parts[parts.count - 2])/\(parts[parts.count - 1])"
+    }
+
+    private static func newestFirst(_ lhs: TriageItem, _ rhs: TriageItem) -> Bool {
+        if lhs.timestamp != rhs.timestamp {
+            return lhs.timestamp > rhs.timestamp
+        }
+        return lhs.id < rhs.id
+    }
+
     // MARK: - Check Runs
 
     public func fetchCheckRuns(
