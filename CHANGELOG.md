@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/Shir0o/dispatch-macos/compare/v1.1.0...v1.2.0) (2026-11-09)
+
+
+### Features
+
+* **github:** backfill existing open issues and pull requests ([#4](https://github.com/Shir0o/dispatch-macos/issues/4)) ([be01c42](https://github.com/Shir0o/dispatch-macos/commit/be01c42e73c4b84348edd79cf01e959b8ec1de36))
+
 ## [1.1.0](https://github.com/Shir0o/dispatch-macos/compare/v1.0.0...v1.1.0) (2026-11-05)
 
 
