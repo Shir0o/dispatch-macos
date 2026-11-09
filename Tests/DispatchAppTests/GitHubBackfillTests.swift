@@ -56,6 +56,16 @@ struct GitHubBackfillTests {
         """
     }
 
+    private func openWorkSearchJSON() -> String {
+        """
+        {
+            "total_count": 2,
+            "incomplete_results": false,
+            "items": \(openWorkJSON())
+        }
+        """
+    }
+
     // MARK: - Service
 
     @Test("Backfill maps open issues and pull requests into triage items")
@@ -151,6 +161,95 @@ struct GitHubBackfillTests {
         ])
 
         #expect(normalized == ["owner/repo", "other/project"])
+    }
+
+    @Test("Owner normalization accepts logins, @handles, and profile URLs")
+    func testNormalizeOwners() {
+        let normalized = GitHubService.normalizeOwners([
+            " shir0o ",
+            "@Shir0o",
+            "https://github.com/another-org/",
+            "another-org",
+            "owner/repo",
+            "",
+            "bad name",
+            "in!valid"
+        ])
+
+        #expect(normalized == ["shir0o", "another-org"])
+    }
+
+    @Test("Backfill can scope to every repository owned by a user or organization")
+    func testFetchOpenWorkByOwnerUsesSearchScope() async throws {
+        MockURLProtocol.reset()
+        nonisolated(unsafe) var requestedURL: String?
+
+        MockURLProtocol.register { request in
+            guard let url = request.url?.absoluteString,
+                  url.contains("api.github.com/search/issues") else { return nil }
+            requestedURL = url
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, Data(openWorkSearchJSON().utf8))
+        }
+
+        let service = makeService(session: makeMockSession())
+        let items = try await service.fetchOpenIssuesAndPullRequests(
+            repositories: [],
+            owners: ["@Shir0o"],
+            login: "me"
+        )
+
+        // The search scope replaces per-repository enumeration.
+        #expect(requestedURL?.contains("user:Shir0o") == true)
+        #expect(requestedURL?.contains("is:open") == true)
+
+        #expect(items.count == 2)
+        #expect(items[0].id == "gh:pr:owner/repo#34")
+        #expect(items[1].id == "gh:issue:owner/repo#12")
+        #expect(items[1].isBackfillDerived == true)
+    }
+
+    @Test("Repositories and owners can be combined without duplicating work")
+    func testRepositoriesAndOwnersCombineWithoutDuplicates() async throws {
+        MockURLProtocol.reset()
+
+        MockURLProtocol.register { request in
+            guard let url = request.url?.absoluteString else { return nil }
+
+            let body: String
+            if url.contains("api.github.com/search/issues") {
+                body = openWorkSearchJSON()
+            } else if url.contains("api.github.com/repos/owner/repo/issues") {
+                body = openWorkJSON()
+            } else {
+                return nil
+            }
+
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, Data(body.utf8))
+        }
+
+        let service = makeService(session: makeMockSession())
+        let items = try await service.fetchOpenIssuesAndPullRequests(
+            repositories: ["owner/repo"],
+            owners: ["owner"],
+            login: "me"
+        )
+
+        // Both sources return the same issue and pull request; they collapse
+        // into one copy of each.
+        #expect(items.count == 2)
+        #expect(Set(items.map(\.id)) == ["gh:pr:owner/repo#34", "gh:issue:owner/repo#12"])
     }
 
     // MARK: - Store Integration

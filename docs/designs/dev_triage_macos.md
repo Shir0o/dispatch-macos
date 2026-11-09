@@ -150,8 +150,11 @@ flowchart TD
   3. On HTTP 200, parses notification threads. For pull request review and CI notifications, queries `/repos/{owner}/{repo}/commits/{ref}/check-runs` via REST v3 on demand to determine CI check suite status.
   4. `/notifications` only returns unread threads, so it cannot surface work that predates the install.
 * **GitHub Open Work Backfill (Cold Start):**
-  1. On launch (in parallel with the first notification poll), fetches every open issue and pull request — `GET /repos/{owner}/{repo}/issues?state=open` for each repository in **Settings → Open Work Backfill**, or `GET /issues?filter=all&state=open` when the repository list is empty.
-  2. Follows `Link: rel="next"` pagination up to three pages per source (100 items per page) and tolerates HTTP 404 per repository.
+  1. On launch (in parallel with the first notification poll), fetches every open issue and pull request. Scope is configured in **Settings → Open Work Backfill**:
+     * **Users or organizations:** `GET /search/issues?q=is:open+user:{login}` collects open work across every repository owned by that account, so tracking a whole account does not require pasting each repository.
+     * **Repositories:** `GET /repos/{owner}/{repo}/issues?state=open` for each explicit `owner/repo`.
+     * **Neither:** falls back to `GET /issues?filter=all&state=open`, i.e. everything the authenticated user is involved with.
+  2. Follows `Link: rel="next"` pagination up to three pages per source (100 items per page), tolerates HTTP 404 per repository, and fails each source independently so one bad repository or account cannot blank the rest.
   3. Emits items through a dedicated `onBackfillUpdated` callback, separate from the notification stream.
   4. Re-runs roughly every 15 minutes so closed issues and merged pull requests drop out, and on demand from the Settings "Backfill Now" button.
 * **System Lifecycle Integration:**
@@ -409,7 +412,7 @@ struct AgentDispatchPayload: Sendable {
 * **Type / Scope:** GitHub REST API v3 Engine
 * **Specification:** Client conforming to `Sendable`. Implements:
   - `fetchNotifications(lastETag:)`: Polls `/notifications` with `If-None-Match`. Returns `.notModified` on HTTP 304, consuming zero quota.
-  - `fetchOpenIssuesAndPullRequests(repositories:login:)`: Fetches every open issue and PR for the tracked repositories (or `GET /issues?filter=all&state=open` when none are configured), following `Link: rel="next"` pagination and mapping each record to a stable backfill item ID.
+  - `fetchOpenIssuesAndPullRequests(repositories:owners:login:)`: Fetches every open issue and PR for the tracked repositories and users/organizations (`GET /search/issues?q=is:open+user:{login}`), falling back to `GET /issues?filter=all&state=open` when neither scope is configured. Follows `Link: rel="next"` pagination, de-duplicates overlapping scopes by item ID, and maps each record to a stable backfill item ID.
   - `fetchCheckRuns(owner:repo:ref:)`: REST v3 check runs for CI alerts.
   - `fetchIssueDetails(repo:number:)`: On-demand retrieval of issue body and comment timeline.
   - `dismissNotification(threadId:)`: Executes `PATCH /notifications/threads/{threadId}`.
@@ -425,7 +428,7 @@ struct AgentDispatchPayload: Sendable {
 
 #### 10. `Sources/DevTriage/State/PreferencesStore.swift` (Create)
 * **Type / Scope:** User Preferences Management
-* **Specification:** `@Observable final class PreferencesStore`. Manages persisted settings via `UserDefaults`: Google Client ID, GitHub PAT, authenticated GitHub login (used for assignment flags), tracked repositories for the open work backfill, default local projects directory (`~/Projects`), and preferred terminal application (`Terminal`, `iTerm2`, `Ghostty`, `VSCode`).
+* **Specification:** `@Observable final class PreferencesStore`. Manages persisted settings via `UserDefaults`: Google Client ID, GitHub PAT, authenticated GitHub login (used for assignment flags), tracked users/organizations and repositories for the open work backfill, default local projects directory (`~/Projects`), and preferred terminal application (`Terminal`, `iTerm2`, `Ghostty`, `VSCode`).
 
 #### 11. `Sources/DevTriage/Views/MainSplitView.swift` (Create)
 * **Type / Scope:** 3-Column Root View Layout

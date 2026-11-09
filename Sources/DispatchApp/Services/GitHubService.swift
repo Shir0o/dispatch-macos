@@ -246,25 +246,34 @@ public final class GitHubService: Sendable {
 
     // MARK: - Open Work Backfill
 
-    /// Fetches every open issue and pull request for the supplied repositories.
+    /// Fetches every open issue and pull request for the supplied repositories
+    /// and/or repository owners.
     ///
     /// Unlike `/notifications` (which only returns unread threads), this is used
     /// once at launch to seed the workspace with work that already existed
     /// before Dispatch was installed.
     ///
     /// - Parameters:
-    ///   - repositories: `owner/repo` entries to scan. When empty, falls back to
-    ///     `/issues?filter=all`, i.e. every open issue and pull request the
-    ///     authenticated user is involved with.
+    ///   - repositories: `owner/repo` entries to scan.
+    ///   - owners: GitHub users or organizations. Every open issue and pull
+    ///     request across all repositories they own is included, so the user
+    ///     can track an entire account instead of pasting each repository.
     ///   - login: Authenticated user's login, used to flag items assigned to them.
+    ///   - maxPagesPerSource: Page cap per repository or owner search.
+    ///
+    /// When both `repositories` and `owners` are empty, falls back to
+    /// `/issues?filter=all`, i.e. every open issue and pull request the
+    /// authenticated user is involved with.
     public func fetchOpenIssuesAndPullRequests(
         repositories: [String] = [],
+        owners: [String] = [],
         login: String? = nil,
         maxPagesPerSource: Int = 3
     ) async throws -> [TriageItem] {
-        let normalized = Self.normalizeRepositories(repositories)
+        let normalizedRepositories = Self.normalizeRepositories(repositories)
+        let normalizedOwners = Self.normalizeOwners(owners)
 
-        if normalized.isEmpty {
+        if normalizedRepositories.isEmpty && normalizedOwners.isEmpty {
             let pages = try await requestAllPages(
                 endpoint: "issues?filter=all&state=open&sort=updated&per_page=100",
                 context: "open issues",
@@ -273,23 +282,44 @@ public final class GitHubService: Sendable {
             return try Self.decodeOpenWork(pages: pages, login: login)
         }
 
-        return try await withThrowingTaskGroup(of: [TriageItem].self) { group in
-            for repo in normalized {
+        return await withTaskGroup(of: [TriageItem].self) { group in
+            for repo in normalizedRepositories {
                 group.addTask {
-                    let pages = try await self.requestAllPages(
+                    // One unreachable repository must not blank the whole
+                    // backfill, so each source fails independently.
+                    guard let pages = try? await self.requestAllPages(
                         endpoint: "repos/\(repo)/issues?state=open&sort=updated&per_page=100",
                         context: "open issues for \(repo)",
                         maxPages: maxPagesPerSource
-                    )
-                    return try Self.decodeOpenWork(pages: pages, login: login)
+                    ), let items = try? Self.decodeOpenWork(pages: pages, login: login) else {
+                        return []
+                    }
+                    return items
+                }
+            }
+
+            for owner in normalizedOwners {
+                group.addTask {
+                    // The search API's `user:` qualifier matches repositories
+                    // owned by a user or organization, so one query covers an
+                    // entire account without enumerating its repositories.
+                    let query = "is:open+user:\(owner)"
+                    guard let pages = try? await self.requestAllPages(
+                        endpoint: "search/issues?q=\(query)&sort=updated&order=desc&per_page=100",
+                        context: "open issues for \(owner)",
+                        maxPages: maxPagesPerSource
+                    ), let items = try? Self.decodeSearchOpenWork(pages: pages, login: login) else {
+                        return []
+                    }
+                    return items
                 }
             }
 
             var items: [TriageItem] = []
-            for try await batch in group {
+            for await batch in group {
                 items.append(contentsOf: batch)
             }
-            return items.sorted(by: Self.newestFirst)
+            return Self.deduplicated(items)
         }
     }
 
@@ -302,6 +332,37 @@ public final class GitHubService: Sendable {
             guard parts.count == 2 else { return nil }
             let repo = parts.joined(separator: "/")
             return seen.insert(repo.lowercased()).inserted ? repo : nil
+        }
+    }
+
+    /// Normalizes user-provided GitHub usernames or organization names.
+    ///
+    /// Accepts a bare login, an `@login`, or a pasted profile URL, drops blanks,
+    /// malformed entries and duplicates, and preserves the first spelling seen.
+    public static func normalizeOwners(_ raw: [String]) -> [String] {
+        var seen = Set<String>()
+        return raw.compactMap { entry in
+            var candidate = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if let hostRange = candidate.range(of: "github.com/") {
+                // Accept a pasted profile URL, keeping only the account segment.
+                candidate = String(candidate[hostRange.upperBound...])
+                if let slash = candidate.firstIndex(of: "/") {
+                    candidate = String(candidate[..<slash])
+                }
+            } else if candidate.contains("/") {
+                // `owner/repo` belongs in the repository list, not here.
+                return nil
+            }
+
+            candidate = candidate.trimmingCharacters(in: CharacterSet(charactersIn: "@ "))
+
+            guard !candidate.isEmpty,
+                  candidate.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else {
+                return nil
+            }
+
+            return seen.insert(candidate.lowercased()).inserted ? candidate : nil
         }
     }
 
@@ -374,105 +435,147 @@ public final class GitHubService: Sendable {
         return nil
     }
 
+    // Decoding shapes shared by the repository listing and the scoped search
+    // endpoints. The search endpoint nests the same issue records under `items`.
+    private struct OpenWorkUserPayload: Decodable {
+        let login: String
+        let avatar_url: String?
+    }
+
+    private struct OpenWorkLabelPayload: Decodable {
+        let name: String
+    }
+
+    private struct OpenWorkPullRequestReference: Decodable {
+        let url: String?
+    }
+
+    private struct OpenWorkIssuePayload: Decodable {
+        let number: Int
+        let title: String
+        let state: String
+        let draft: Bool?
+        let user: OpenWorkUserPayload?
+        let labels: [OpenWorkLabelPayload]?
+        let assignees: [OpenWorkUserPayload]?
+        let updated_at: String
+        let html_url: String
+        let repository_url: String
+        let pull_request: OpenWorkPullRequestReference?
+    }
+
+    private struct OpenWorkSearchResponse: Decodable {
+        let items: [OpenWorkIssuePayload]
+    }
+
     private static func decodeOpenWork(
         pages: [Data],
         login: String?
     ) throws -> [TriageItem] {
-        struct UserPayload: Decodable {
-            let login: String
-            let avatar_url: String?
+        var issues: [OpenWorkIssuePayload] = []
+
+        for page in pages {
+            do {
+                issues.append(contentsOf: try JSONDecoder().decode([OpenWorkIssuePayload].self, from: page))
+            } catch {
+                throw GitHubError.decodingError(error.localizedDescription)
+            }
         }
 
-        struct LabelPayload: Decodable {
-            let name: String
+        return mapOpenWork(issues: issues, login: login)
+    }
+
+    private static func decodeSearchOpenWork(
+        pages: [Data],
+        login: String?
+    ) throws -> [TriageItem] {
+        var issues: [OpenWorkIssuePayload] = []
+
+        for page in pages {
+            do {
+                issues.append(
+                    contentsOf: try JSONDecoder().decode(OpenWorkSearchResponse.self, from: page).items
+                )
+            } catch {
+                throw GitHubError.decodingError(error.localizedDescription)
+            }
         }
 
-        struct PullRequestReference: Decodable {
-            let url: String?
-        }
+        return mapOpenWork(issues: issues, login: login)
+    }
 
-        struct IssuePayload: Decodable {
-            let number: Int
-            let title: String
-            let state: String
-            let draft: Bool?
-            let user: UserPayload?
-            let labels: [LabelPayload]?
-            let assignees: [UserPayload]?
-            let updated_at: String
-            let html_url: String
-            let repository_url: String
-            let pull_request: PullRequestReference?
-        }
-
+    private static func mapOpenWork(
+        issues: [OpenWorkIssuePayload],
+        login: String?
+    ) -> [TriageItem] {
         let fractionalFormatter = ISO8601DateFormatter()
         fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let plainFormatter = ISO8601DateFormatter()
 
         var items: [TriageItem] = []
 
-        for page in pages {
-            let payload: [IssuePayload]
-            do {
-                payload = try JSONDecoder().decode([IssuePayload].self, from: page)
-            } catch {
-                throw GitHubError.decodingError(error.localizedDescription)
-            }
+        for issue in issues {
+            guard let repo = repositoryName(from: issue.repository_url),
+                  let webURL = URL(string: issue.html_url) else { continue }
 
-            for issue in payload {
-                guard let repo = repositoryName(from: issue.repository_url),
-                      let webURL = URL(string: issue.html_url) else { continue }
+            let date = fractionalFormatter.date(from: issue.updated_at)
+                ?? plainFormatter.date(from: issue.updated_at)
+                ?? Date()
 
-                let date = fractionalFormatter.date(from: issue.updated_at)
-                    ?? plainFormatter.date(from: issue.updated_at)
-                    ?? Date()
+            let isPullRequest = issue.pull_request != nil
+            let labels = issue.labels?.map(\.name) ?? []
+            let isAssignedToMe: Bool = {
+                guard let login, !login.isEmpty else { return false }
+                return (issue.assignees ?? []).contains {
+                    $0.login.caseInsensitiveCompare(login) == .orderedSame
+                }
+            }()
 
-                let isPullRequest = issue.pull_request != nil
-                let labels = issue.labels?.map(\.name) ?? []
-                let isAssignedToMe: Bool = {
-                    guard let login, !login.isEmpty else { return false }
-                    return (issue.assignees ?? []).contains {
-                        $0.login.caseInsensitiveCompare(login) == .orderedSame
-                    }
-                }()
-
-                let kind: TriageKind = isPullRequest
-                    ? .gitHubPullRequest(
-                        number: issue.number,
-                        repo: repo,
-                        isDraft: issue.draft ?? false,
-                        reviewStatus: .none,
-                        ciStatus: .neutral
-                    )
-                    : .gitHubIssue(
-                        number: issue.number,
-                        repo: repo,
-                        state: issue.state,
-                        isAssignedToMe: isAssignedToMe
-                    )
-
-                let idPrefix = isPullRequest ? "gh:pr:" : "gh:issue:"
-
-                items.append(
-                    TriageItem(
-                        id: "\(idPrefix)\(repo)#\(issue.number)",
-                        source: .gitHub,
-                        title: issue.title,
-                        authorName: issue.user?.login ?? "ghost",
-                        authorAvatarURL: issue.user?.avatar_url.flatMap { URL(string: $0) },
-                        timestamp: date,
-                        isUnread: false,
-                        isStarred: false,
-                        isArchived: false,
-                        tags: labels,
-                        kind: kind,
-                        webURL: webURL
-                    )
+            let kind: TriageKind = isPullRequest
+                ? .gitHubPullRequest(
+                    number: issue.number,
+                    repo: repo,
+                    isDraft: issue.draft ?? false,
+                    reviewStatus: .none,
+                    ciStatus: .neutral
                 )
-            }
+                : .gitHubIssue(
+                    number: issue.number,
+                    repo: repo,
+                    state: issue.state,
+                    isAssignedToMe: isAssignedToMe
+                )
+
+            let idPrefix = isPullRequest ? "gh:pr:" : "gh:issue:"
+
+            items.append(
+                TriageItem(
+                    id: "\(idPrefix)\(repo)#\(issue.number)",
+                    source: .gitHub,
+                    title: issue.title,
+                    authorName: issue.user?.login ?? "ghost",
+                    authorAvatarURL: issue.user?.avatar_url.flatMap { URL(string: $0) },
+                    timestamp: date,
+                    isUnread: false,
+                    isStarred: false,
+                    isArchived: false,
+                    tags: labels,
+                    kind: kind,
+                    webURL: webURL
+                )
+            )
         }
 
-        return items.sorted(by: newestFirst)
+        return items
+    }
+
+    private static func deduplicated(_ items: [TriageItem]) -> [TriageItem] {
+        var seen = Set<String>()
+        var unique: [TriageItem] = []
+        for item in items where seen.insert(item.id).inserted {
+            unique.append(item)
+        }
+        return unique.sorted(by: newestFirst)
     }
 
     private static func repositoryName(from repositoryURL: String) -> String? {

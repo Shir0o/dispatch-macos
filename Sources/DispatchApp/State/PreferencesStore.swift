@@ -10,6 +10,7 @@ public final class PreferencesStore {
         static let githubPAT = "dispatch.githubPAT"
         static let githubUsername = "dispatch.githubUsername"
         static let trackedRepositories = "dispatch.trackedRepositories"
+        static let trackedOwners = "dispatch.trackedOwners"
         static let projectsDirectory = "dispatch.projectsDirectory"
         static let preferredTerminal = "dispatch.preferredTerminal"
     }
@@ -38,10 +39,18 @@ public final class PreferencesStore {
     }
 
     /// `owner/repo` entries whose open issues and pull requests are backfilled.
-    /// An empty list means "everything the authenticated user is involved with".
     public var trackedRepositories: [String] {
         didSet {
             defaults.set(trackedRepositories, forKey: Keys.trackedRepositories)
+        }
+    }
+
+    /// GitHub users or organizations whose entire repository set is backfilled.
+    /// Together with an empty `trackedRepositories` list, an empty list here
+    /// means "everything the authenticated user is involved with".
+    public var trackedOwners: [String] {
+        didSet {
+            defaults.set(trackedOwners, forKey: Keys.trackedOwners)
         }
     }
 
@@ -66,6 +75,7 @@ public final class PreferencesStore {
         self.githubPAT = defaults.string(forKey: Keys.githubPAT) ?? ""
         self.githubUsername = defaults.string(forKey: Keys.githubUsername) ?? ""
         self.trackedRepositories = defaults.stringArray(forKey: Keys.trackedRepositories) ?? []
+        self.trackedOwners = defaults.stringArray(forKey: Keys.trackedOwners) ?? []
         self.projectsDirectory = defaults.string(forKey: Keys.projectsDirectory) ?? "~/Projects"
 
         if let termRaw = defaults.string(forKey: Keys.preferredTerminal),
@@ -79,6 +89,11 @@ public final class PreferencesStore {
     /// Tracked repositories, normalized to well-formed, de-duplicated `owner/repo` entries.
     public var normalizedTrackedRepositories: [String] {
         GitHubService.normalizeRepositories(trackedRepositories)
+    }
+
+    /// Tracked users/organizations, normalized to well-formed, de-duplicated logins.
+    public var normalizedTrackedOwners: [String] {
+        GitHubService.normalizeOwners(trackedOwners)
     }
 
     /// Resolves local repository path given a repository name (e.g. "repo-name" or "owner/repo-name").

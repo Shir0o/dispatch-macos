@@ -25,10 +25,12 @@ struct DispatchApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: .dispatchGitHubBackfillRequested)) { _ in
                     let coordinator = syncCoordinator
                     let repositories = preferencesStore.normalizedTrackedRepositories
+                    let owners = preferencesStore.normalizedTrackedOwners
                     let login = preferencesStore.githubUsername
                     Task {
                         await coordinator?.performGitHubBackfill(
                             repositories: repositories,
+                            owners: owners,
                             login: login.isEmpty ? nil : login
                         )
                     }
@@ -91,6 +93,7 @@ struct DispatchApp: App {
             }
             await coordinator.setBackfillConfiguration(
                 repositories: preferencesStore.normalizedTrackedRepositories,
+                owners: preferencesStore.normalizedTrackedOwners,
                 login: preferencesStore.githubUsername.isEmpty ? nil : preferencesStore.githubUsername
             )
             await coordinator.start()
