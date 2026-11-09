@@ -23,7 +23,7 @@ struct AuthServiceTests {
             (continuation: CheckedContinuation<URL, any Error>) in
             Task { @MainActor in
                 let handler: @Sendable (URL?, (any Error)?) -> Void =
-                    AuthService.makeWebAuthCompletionHandler(continuation)
+                    AuthService.makeWebAuthCompletionHandler(ContinuationGate(continuation))
                 DispatchQueue.global(qos: .userInitiated).async {
                     handler(callback, nil)
                 }
@@ -45,7 +45,7 @@ struct AuthServiceTests {
                 (continuation: CheckedContinuation<URL, any Error>) in
                 Task { @MainActor in
                     let handler: @Sendable (URL?, (any Error)?) -> Void =
-                        AuthService.makeWebAuthCompletionHandler(continuation)
+                        AuthService.makeWebAuthCompletionHandler(ContinuationGate(continuation))
                     DispatchQueue.global(qos: .userInitiated).async {
                         handler(nil, expected)
                     }

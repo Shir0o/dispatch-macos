@@ -12,6 +12,8 @@ public final class PreferencesStore {
         static let trackedRepositories = "dispatch.trackedRepositories"
         static let projectsDirectory = "dispatch.projectsDirectory"
         static let preferredTerminal = "dispatch.preferredTerminal"
+        static let preferredAgent = "dispatch.preferredAgent"
+        static let agentCommand = "dispatch.agentCommand"
     }
 
     private let defaults: UserDefaults
@@ -59,6 +61,25 @@ public final class PreferencesStore {
         }
     }
 
+    /// Local CLI coding agent that receives dispatched issue prompts.
+    public var preferredAgent: AgentCLI {
+        didSet {
+            defaults.set(preferredAgent.rawValue, forKey: Keys.preferredAgent)
+            let suggested = preferredAgent.defaultCommand
+            if !preferredAgent.requiresCommand, !suggested.isEmpty {
+                agentCommand = suggested
+            }
+        }
+    }
+
+    /// Command line used to start the selected agent with a single message argument.
+    /// Editable so users can add flags, e.g. `opencode run --model anthropic/claude-sonnet-4`.
+    public var agentCommand: String {
+        didSet {
+            defaults.set(agentCommand, forKey: Keys.agentCommand)
+        }
+    }
+
     /// Initializes preferences from the given `UserDefaults` instance.
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -74,6 +95,12 @@ public final class PreferencesStore {
         } else {
             self.preferredTerminal = .terminal
         }
+
+        let agent = defaults.string(forKey: Keys.preferredAgent)
+            .flatMap(AgentCLI.init(rawValue:)) ?? .opencode
+        self.preferredAgent = agent
+        self.agentCommand = defaults.string(forKey: Keys.agentCommand)
+            ?? agent.defaultCommand
     }
 
     /// Tracked repositories, normalized to well-formed, de-duplicated `owner/repo` entries.

@@ -90,6 +90,12 @@ public final class TriageStore {
     /// reappearing on the next backfill.
     private var dismissedGitHubKeys: Set<String> = []
 
+    /// IDs of issue-stream items the user dismissed locally. The search API has no
+    /// per-item dismissal, so this keeps them from reappearing on the next poll.
+    private var dismissedGitHubIssueIDs: Set<String> = []
+
+    private static let dismissedDefaultsKey = "dispatch.dismissedGitHubIssueIDs"
+
     // MARK: - Computed Properties
 
     /// GitHub items filtered by the active smart filter.
@@ -148,6 +154,21 @@ public final class TriageStore {
         self.gmailService = gmailService
         self.githubService = githubService
         self.authService = authService
+        self.dismissedGitHubIssueIDs = Set(
+            UserDefaults.standard.stringArray(forKey: Self.dismissedDefaultsKey) ?? []
+        )
+    }
+
+    /// Records a locally dismissed issue-stream item and persists the set.
+    private func dismissLocally(_ item: TriageItem) {
+        guard item.source == .gitHub else { return }
+        if case .gitHubNotification = item.kind { return }
+
+        dismissedGitHubIssueIDs.insert(item.id)
+        UserDefaults.standard.set(
+            Array(dismissedGitHubIssueIDs.suffix(1000)),
+            forKey: Self.dismissedDefaultsKey
+        )
     }
 
     // MARK: - Unread Counts
@@ -170,9 +191,14 @@ public final class TriageStore {
         case .gitHub:
             // Live notifications replace the previous notification set, while
             // backfilled open work is retained until the next backfill refresh.
+            // Issue-stream items carry no server-side dismiss state, so locally
+            // dismissed ones are filtered out so they do not reappear each poll.
             let retainedBackfill = gitHubItems.filter { $0.isBackfillDerived }
+            let merged = mergedGitHubItems(notifications: items, backfill: retainedBackfill)
             self.gitHubItems = Array(
-                mergedGitHubItems(notifications: items, backfill: retainedBackfill).prefix(500)
+                merged
+                    .filter { !dismissedGitHubIssueIDs.contains($0.id) }
+                    .prefix(500)
             )
         }
 
@@ -346,6 +372,7 @@ public final class TriageStore {
             if let idx = originalIndex {
                 gitHubItems.remove(at: idx)
             }
+            dismissLocally(item)
         }
 
         // Adjust selection
@@ -362,10 +389,14 @@ public final class TriageStore {
                     }
                     try await gmailService.archiveThread(threadId: item.id)
                 } else {
-                    guard let githubService = self.githubService else {
-                        throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "GitHub service not configured"])
+                    // Search-derived issues have no notification thread; dismissing
+                    // them is a local, snapshot-persisted action only.
+                    if case .gitHubNotification(let threadId, _) = item.kind {
+                        guard let githubService = self.githubService else {
+                            throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "GitHub service not configured"])
+                        }
+                        try await githubService.dismissNotification(threadId: threadId)
                     }
-                    try await githubService.dismissNotification(threadId: item.id)
                 }
             } catch {
                 // Rollback on network failure
@@ -400,6 +431,7 @@ public final class TriageStore {
             if let idx = originalIndex {
                 gitHubItems.remove(at: idx)
             }
+            dismissLocally(item)
         }
 
         if selectedItemId == item.id {
@@ -415,10 +447,14 @@ public final class TriageStore {
                     }
                     try await gmailService.trashThread(threadId: item.id)
                 } else {
-                    guard let githubService = self.githubService else {
-                        throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "GitHub service not configured"])
+                    // Only notification threads can be unsubscribed upstream; search-derived
+                    // issues are removed locally and restored on the next sync if still open.
+                    if case .gitHubNotification(let threadId, _) = item.kind {
+                        guard let githubService = self.githubService else {
+                            throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "GitHub service not configured"])
+                        }
+                        try await githubService.unsubscribeNotification(threadId: threadId)
                     }
-                    try await githubService.unsubscribeNotification(threadId: item.id)
                 }
             } catch {
                 // Rollback on failure

@@ -97,9 +97,14 @@ public final class GitHubService: Sendable {
         return (data, httpResponse)
     }
 
-    // MARK: - Notifications
+    // MARK: - Assigned Issues
 
-    public func fetchNotifications(
+    /// Fetches open issues assigned to the authenticated user.
+    ///
+    /// Uses the search API instead of `/notifications`, which GitHub only exposes to
+    /// classic personal access tokens. Search works with a fine-grained token limited
+    /// to Issues: Read, and matches what the triage pane actually needs.
+    public func fetchAssignedIssues(
         lastETag: String?
     ) async throws -> (items: [TriageItem], newETag: String?, notModified: Bool) {
         var headers: [String: String] = [:]
@@ -107,10 +112,11 @@ public final class GitHubService: Sendable {
             headers["If-None-Match"] = etag
         }
 
-        let (data, response) = try await makeRequest(
-            endpoint: "notifications?all=false",
-            headers: headers
-        )
+        let query = "is:issue is:open assignee:@me"
+        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        let endpoint = "search/issues?q=\(encodedQuery)&per_page=50&sort=updated&order=desc"
+
+        let (data, response) = try await makeRequest(endpoint: endpoint, headers: headers)
 
         if response.statusCode == 304 {
             return (items: [], newETag: lastETag, notModified: true)
@@ -130,45 +136,36 @@ public final class GitHubService: Sendable {
         }
 
         guard (200...299).contains(response.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? "HTTP \(response.statusCode)"
-            throw GitHubError.invalidResponse(statusCode: response.statusCode, message: msg)
+            let message = String(data: data, encoding: .utf8) ?? "HTTP \(response.statusCode)"
+            throw GitHubError.invalidResponse(statusCode: response.statusCode, message: message)
         }
 
-        let rawETag = response.value(forHTTPHeaderField: "ETag") ?? response.value(forHTTPHeaderField: "etag")
+        let rawETag = response.value(forHTTPHeaderField: "ETag")
 
-        struct RepoOwner: Decodable {
+        struct SearchUser: Decodable {
             let login: String
-            let avatar_url: String
+            let avatar_url: String?
         }
 
-        struct RepoInfo: Decodable {
+        struct SearchItem: Decodable {
             let id: Int
-            let name: String
-            let full_name: String
-            let html_url: String
-            let owner: RepoOwner
-        }
-
-        struct NotificationSubject: Decodable {
+            let number: Int
             let title: String
-            let url: String?
-            let latest_comment_url: String?
-            let type: String
-        }
-
-        struct NotificationItem: Decodable {
-            let id: String
-            let unread: Bool
-            let reason: String
+            let state: String
             let updated_at: String
-            let subject: NotificationSubject
-            let repository: RepoInfo
-            let url: String
+            let html_url: String
+            let user: SearchUser?
+            let repository_url: String
         }
 
-        let notificationList: [NotificationItem]
+        struct SearchResponse: Decodable {
+            let total_count: Int
+            let items: [SearchItem]
+        }
+
+        let searchResponse: SearchResponse
         do {
-            notificationList = try JSONDecoder().decode([NotificationItem].self, from: data)
+            searchResponse = try JSONDecoder().decode(SearchResponse.self, from: data)
         } catch {
             throw GitHubError.decodingError(error.localizedDescription)
         }
@@ -177,67 +174,35 @@ public final class GitHubService: Sendable {
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let fallbackIsoFormatter = ISO8601DateFormatter()
 
-        let items: [TriageItem] = notificationList.map { notif in
-            let date = isoFormatter.date(from: notif.updated_at)
-                ?? fallbackIsoFormatter.date(from: notif.updated_at)
+        let items: [TriageItem] = searchResponse.items.map { issue in
+            let date = isoFormatter.date(from: issue.updated_at)
+                ?? fallbackIsoFormatter.date(from: issue.updated_at)
                 ?? Date()
 
-            let subjectNumber: Int = {
-                if let urlString = notif.subject.url,
-                   let last = urlString.split(separator: "/").last,
-                   let num = Int(last) {
-                    return num
-                }
-                return 0
-            }()
-
-            let typeLower = notif.subject.type.lowercased()
-            let kind: TriageKind
-            let webURL: URL
-
-            if typeLower == "issue" {
-                let isAssigned = notif.reason == "assign" || notif.reason == "author"
-                kind = .gitHubIssue(
-                    number: subjectNumber,
-                    repo: notif.repository.full_name,
-                    state: "open",
-                    isAssignedToMe: isAssigned
-                )
-                webURL = URL(string: "\(notif.repository.html_url)/issues/\(subjectNumber)")
-                    ?? URL(string: notif.repository.html_url)!
-            } else if typeLower == "pullrequest" {
-                let reviewStatus: ReviewStatus = notif.reason == "review_requested" ? .pending : .none
-                let ciStatus: CheckSuiteStatus = notif.reason == "ci_activity" ? .queued : .neutral
-                kind = .gitHubPullRequest(
-                    number: subjectNumber,
-                    repo: notif.repository.full_name,
-                    isDraft: false,
-                    reviewStatus: reviewStatus,
-                    ciStatus: ciStatus
-                )
-                webURL = URL(string: "\(notif.repository.html_url)/pull/\(subjectNumber)")
-                    ?? URL(string: notif.repository.html_url)!
-            } else {
-                kind = .gitHubNotification(threadId: notif.id, reason: notif.reason)
-                webURL = URL(string: notif.repository.html_url)
-                    ?? URL(string: "https://github.com/notifications")!
-            }
-
-            let avatarURL = URL(string: notif.repository.owner.avatar_url)
+            // repository_url looks like https://api.github.com/repos/owner/name
+            let repo = issue.repository_url
+                .split(separator: "/")
+                .suffix(2)
+                .joined(separator: "/")
 
             return TriageItem(
-                id: notif.id,
+                id: "\(repo)#\(issue.number)",
                 source: .gitHub,
-                title: notif.subject.title,
-                authorName: notif.repository.full_name,
-                authorAvatarURL: avatarURL,
+                title: issue.title,
+                authorName: repo,
+                authorAvatarURL: issue.user?.avatar_url.flatMap(URL.init(string:)),
                 timestamp: date,
-                isUnread: notif.unread,
+                isUnread: true,
                 isStarred: false,
                 isArchived: false,
-                tags: [notif.reason, notif.subject.type],
-                kind: kind,
-                webURL: webURL
+                tags: [issue.state, "Issue"],
+                kind: .gitHubIssue(
+                    number: issue.number,
+                    repo: repo,
+                    state: issue.state,
+                    isAssignedToMe: true
+                ),
+                webURL: URL(string: issue.html_url) ?? URL(string: "https://github.com/issues")!
             )
         }
 
