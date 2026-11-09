@@ -195,6 +195,8 @@ Releases are automated with [release-please](https://github.com/googleapis/relea
 > [!NOTE]
 > If release PRs are not being opened, enable **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**.
 
+Add a `RELEASE_PLEASE_TOKEN` repository secret (a fine-grained PAT with **Contents** and **Pull requests** write access, or a GitHub App token) so release PRs are authored by a trusted identity. Without it, release-please falls back to `GITHUB_TOKEN`, and its PRs run CI only after manual approval — which leaves the required **Build and test** check stuck at *Expected*.
+
 Manual releases are still supported: push a `v<semver>` tag (`git tag v1.0.1 && git push origin v1.0.1`), or run the **Release** workflow from the Actions tab with a version number. Suffixed versions such as `v1.1.0-beta.1` are published as pre-releases.
 
 By default the DMG is ad-hoc signed. To enable Developer ID signing and Apple notarization, add these repository secrets:
