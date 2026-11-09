@@ -87,6 +87,36 @@ public struct GoogleRedirect: Sendable, Equatable {
     public let redirectURI: String
 }
 
+// MARK: - ContinuationGate
+
+/// Guarantees a `CheckedContinuation` is resumed exactly once.
+///
+/// A second `resume` on a `CheckedContinuation` is an immediate `SIGTRAP`, which is
+/// how a failed OAuth attempt used to take the whole app down: `ASWebAuthenticationSession`
+/// both calls its completion handler and lets `start()` return `false`.
+final class ContinuationGate<Success: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Success, Error>?
+
+    init(_ continuation: CheckedContinuation<Success, Error>) {
+        self.continuation = continuation
+    }
+
+    /// Resumes the continuation unless it has already been resumed.
+    /// - Returns: `true` when this call performed the resume.
+    @discardableResult
+    func resume(with result: Result<Success, Error>) -> Bool {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+
+        guard let pending else { return false }
+        pending.resume(with: result)
+        return true
+    }
+}
+
 // MARK: - AuthService
 
 public actor AuthService {
@@ -244,20 +274,22 @@ public actor AuthService {
     /// assertion and the process traps with `EXC_BREAKPOINT (SIGTRAP)` as soon
     /// as the sheet closes (success, cancel, or an OAuth error such as
     /// `redirect_uri_mismatch`). Keep this factory `nonisolated` and the
-    /// returned closure `@Sendable`.
+    /// returned closure `@Sendable`. The gate makes the resume idempotent, since
+    /// `ASWebAuthenticationSession` can deliver the callback and fail `start()`
+    /// in the same turn.
     nonisolated static func makeWebAuthCompletionHandler(
-        _ continuation: CheckedContinuation<URL, any Error>
+        _ gate: ContinuationGate<URL>
     ) -> @Sendable (URL?, (any Error)?) -> Void {
         { callbackURL, error in
             if let error {
-                continuation.resume(throwing: error)
+                gate.resume(with: .failure(error))
                 return
             }
             guard let callbackURL else {
-                continuation.resume(throwing: AuthError.missingAuthorizationCode)
+                gate.resume(with: .failure(AuthError.missingAuthorizationCode))
                 return
             }
-            continuation.resume(returning: callbackURL)
+            gate.resume(with: .success(callbackURL))
         }
     }
 
@@ -265,16 +297,17 @@ public actor AuthService {
     private func runWebAuthSession(url: URL, callbackScheme: String) async throws -> URL {
         defer { WebAuthSessionHolder.shared.session = nil }
         return try await withCheckedThrowingContinuation { continuation in
+            let gate = ContinuationGate(continuation)
             let session = ASWebAuthenticationSession(
                 url: url,
                 callbackURLScheme: callbackScheme,
-                completionHandler: Self.makeWebAuthCompletionHandler(continuation)
+                completionHandler: Self.makeWebAuthCompletionHandler(gate)
             )
             session.presentationContextProvider = WebAuthPresentationContextProvider.shared
             session.prefersEphemeralWebBrowserSession = false
             WebAuthSessionHolder.shared.session = session
             if !session.start() {
-                continuation.resume(throwing: AuthError.sessionStartFailed)
+                gate.resume(with: .failure(AuthError.sessionStartFailed))
             }
         }
     }

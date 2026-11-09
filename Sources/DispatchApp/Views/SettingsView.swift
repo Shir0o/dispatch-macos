@@ -64,9 +64,10 @@ public struct SettingsView: View {
                     TextField("Google Client ID:", text: Bindable(preferencesStore).googleClientId)
                         .textFieldStyle(.roundedBorder)
 
-                    Text("Create an OAuth client ID of type **iOS** in Google Cloud Console (not Web or Desktop). Google derives the redirect URI from that client ID:")
+                    Text("Create an OAuth client ID of type **iOS** in Google Cloud Console (not Web or Desktop), enable the Gmail API, and add yourself as a test user. Google derives the redirect URI from that client ID:")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     Text(derivedRedirectURI ?? "com.googleusercontent.apps.<client-id>:/oauth2redirect")
                         .font(.system(.caption, design: .monospaced))
@@ -216,9 +217,18 @@ public struct SettingsView: View {
                             let panel = NSOpenPanel()
                             panel.canChooseFiles = false
                             panel.canChooseDirectories = true
+                            panel.canCreateDirectories = true
                             panel.allowsMultipleSelection = false
-                            if panel.runModal() == .OK, let url = panel.url {
-                                preferencesStore.projectsDirectory = url.path
+                            panel.prompt = "Choose"
+                            // A sandboxed app that is not frontmost opens the panel
+                            // behind every other window, which reads as "nothing happened".
+                            NSApp.activate(ignoringOtherApps: true)
+                            panel.begin { response in
+                                let selectedURL = panel.url
+                                Task { @MainActor in
+                                    guard response == .OK, let selectedURL else { return }
+                                    preferencesStore.projectsDirectory = selectedURL.path
+                                }
                             }
                         }
                     }
@@ -226,6 +236,36 @@ public struct SettingsView: View {
                     Text("Dispatch inspects this directory to link local repository working copies inside formatted prompts for CLI agents.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Coding Agent")
+                        .font(.headline)
+
+                    Picker("Agent:", selection: Bindable(preferencesStore).preferredAgent) {
+                        ForEach(AgentCLI.allCases) { agent in
+                            Text(agent.rawValue).tag(agent)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    if preferencesStore.preferredAgent != .none {
+                        TextField("Command:", text: Bindable(preferencesStore).agentCommand)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+
+                        Text("⌘⇧A stages the issue prompt to a file and copies a ready-to-run command such as `opencode run \"$(cat …)\"` for you to paste into the terminal.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("⌘⇧A copies the raw issue prompt to the clipboard.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .padding(.vertical, 4)
             }

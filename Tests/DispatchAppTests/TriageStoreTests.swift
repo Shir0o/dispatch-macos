@@ -13,11 +13,12 @@ struct TriageStoreTests {
         source: TriageSource,
         title: String = "Test Item",
         isUnread: Bool = true,
-        tags: [String] = []
+        tags: [String] = [],
+        kind overrideKind: TriageKind? = nil
     ) -> TriageItem {
-        let kind: TriageKind = source == .gmail
+        let kind: TriageKind = overrideKind ?? (source == .gmail
             ? .email(threadId: id, snippet: "Snippet for \(id)", hasHtml: false)
-            : .gitHubIssue(number: 1, repo: "owner/repo", state: "open", isAssignedToMe: true)
+            : .gitHubIssue(number: 1, repo: "owner/repo", state: "open", isAssignedToMe: true))
 
         return TriageItem(
             id: id,
@@ -200,7 +201,12 @@ struct TriageStoreTests {
         let store = TriageStore()
 
         let item0 = makeTestItem(id: "gh0", source: .gitHub, title: "First PR")
-        let item1 = makeTestItem(id: "gh1", source: .gitHub, title: "Target Issue")
+        let item1 = makeTestItem(
+            id: "gh1",
+            source: .gitHub,
+            title: "Target Issue",
+            kind: .gitHubNotification(threadId: "gh1", reason: "assign")
+        )
         let item2 = makeTestItem(id: "gh2", source: .gitHub, title: "Third PR")
         store.gitHubItems = [item0, item1, item2]
 
@@ -240,6 +246,59 @@ struct TriageStoreTests {
         #expect(store.gitHubItems.count == 3)
         #expect(store.gitHubItems[1].id == "gh1")
         #expect(store.toastMessage?.contains("Failed to archive") == true)
+    }
+
+    @Test("Archiving a search-derived issue is local-only and never hits the network")
+    func testIssueArchiveIsLocalOnly() async throws {
+        let store = TriageStore()
+
+        let issue = makeTestItem(id: "owner/repo#7", source: .gitHub, title: "Assigned issue")
+        store.gitHubItems = [issue]
+
+        MockURLProtocol.reset()
+        nonisolated(unsafe) var networkCalls = 0
+        MockURLProtocol.register { request in
+            networkCalls += 1
+            let resp = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 500,
+                httpVersion: "HTTP/1.1",
+                headerFields: [:]
+            )!
+            return (resp, Data())
+        }
+
+        store.githubService = GitHubService(session: makeMockSession()) { "mock-token" }
+
+        store.archive(item: issue)
+        #expect(store.gitHubItems.isEmpty)
+
+        // Give the (absent) network task time to run and potentially roll back.
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        #expect(store.gitHubItems.isEmpty)
+        #expect(networkCalls == 0)
+        #expect(store.toastMessage == nil)
+    }
+
+    @Test("A locally dismissed issue does not reappear on the next sync")
+    func testDismissedIssueDoesNotReappear() async {
+        defer {
+            UserDefaults.standard.removeObject(forKey: "dispatch.dismissedGitHubIssueIDs")
+        }
+
+        let store = TriageStore()
+        let issue = makeTestItem(id: "owner/repo#9", source: .gitHub, title: "Dismiss me")
+
+        store.setItems([issue], for: .gitHub)
+        #expect(store.gitHubItems.count == 1)
+
+        store.archive(item: issue)
+        #expect(store.gitHubItems.isEmpty)
+
+        // The next poll returns the same still-open issue from the search API.
+        store.setItems([issue], for: .gitHub)
+        #expect(store.gitHubItems.isEmpty)
     }
 
     @Test("Successful archive keeps item removed and does not trigger rollback")

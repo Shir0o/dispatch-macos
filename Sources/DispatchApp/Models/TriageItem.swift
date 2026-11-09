@@ -171,6 +171,35 @@ public enum TerminalApp: String, Codable, Sendable, CaseIterable, Identifiable {
     }
 }
 
+/// Local CLI coding agent that receives a dispatched issue prompt.
+public enum AgentCLI: String, Codable, Sendable, CaseIterable, Identifiable {
+    case opencode = "OpenCode"
+    case claude = "Claude Code"
+    case antigravity = "Antigravity"
+    case custom = "Custom"
+    case none = "Clipboard Only"
+
+    public var id: String { rawValue }
+
+    /// Executable and sub-command used to run the agent with a single message argument.
+    public var defaultCommand: String {
+        switch self {
+        case .opencode:
+            return "opencode run"
+        case .claude:
+            return "claude"
+        case .antigravity:
+            return "antigravity"
+        case .custom, .none:
+            return ""
+        }
+    }
+
+    public var requiresCommand: Bool {
+        self == .custom
+    }
+}
+
 public struct AgentDispatchPayload: Sendable, Hashable {
     public let issueNumber: Int
     public let repository: String

@@ -267,7 +267,7 @@ public actor SyncCoordinator {
 
     private func syncGitHub() async {
         do {
-            let result = try await gitHubService.fetchNotifications(lastETag: lastGitHubETag)
+            let result = try await gitHubService.fetchAssignedIssues(lastETag: lastGitHubETag)
             if !result.notModified {
                 self.lastGitHubETag = result.newETag
                 emitUpdate(items: result.items, source: .gitHub)

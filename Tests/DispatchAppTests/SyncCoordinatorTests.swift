@@ -157,35 +157,25 @@ struct SyncCoordinatorTests {
         """
     }
 
-    private func gitHubNotificationsJSON(notifications: [(id: String, title: String, number: Int)]) -> String {
-        let entries = notifications.map { notif in
+    private func gitHubSearchIssuesJSON(issues: [(id: String, title: String, number: Int)]) -> String {
+        let entries = issues.map { issue in
             """
             {
-                "id": "\(notif.id)",
-                "unread": true,
-                "reason": "assign",
+                "id": 1,
+                "number": \(issue.number),
+                "title": "\(issue.title)",
+                "state": "open",
                 "updated_at": "2024-01-01T12:00:00Z",
-                "subject": {
-                    "title": "\(notif.title)",
-                    "url": "https://api.github.com/repos/owner/repo/issues/\(notif.number)",
-                    "latest_comment_url": null,
-                    "type": "Issue"
+                "html_url": "https://github.com/owner/repo/issues/\(issue.number)",
+                "user": {
+                    "login": "owner",
+                    "avatar_url": "https://avatars.githubusercontent.com/u/1"
                 },
-                "repository": {
-                    "id": 1,
-                    "name": "repo",
-                    "full_name": "owner/repo",
-                    "html_url": "https://github.com/owner/repo",
-                    "owner": {
-                        "login": "owner",
-                        "avatar_url": "https://avatars.githubusercontent.com/u/1"
-                    }
-                },
-                "url": "https://api.github.com/notifications/threads/\(notif.id)"
+                "repository_url": "https://api.github.com/repos/owner/repo"
             }
             """
         }
-        return "[\(entries.joined(separator: ", "))]"
+        return "{\"total_count\": \(issues.count), \"items\": [\(entries.joined(separator: ", "))]}"
     }
 
     // MARK: - Tests
@@ -215,9 +205,9 @@ struct SyncCoordinatorTests {
             return nil
         }
 
-        // Mock GitHub notifications endpoint
+        // Mock GitHub assigned-issues search endpoint
         MockURLProtocol.register { request in
-            guard let url = request.url?.absoluteString, url.contains("api.github.com/notifications") else { return nil }
+            guard let url = request.url?.absoluteString, url.contains("api.github.com/search/issues") else { return nil }
             let resp = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -227,7 +217,7 @@ struct SyncCoordinatorTests {
                     "ETag": "W/\"gh-initial-etag\""
                 ]
             )!
-            let json = gitHubNotificationsJSON(notifications: [("notif-1", "Assigned Issue", 101)])
+            let json = gitHubSearchIssuesJSON(issues: [("notif-1", "Assigned Issue", 101)])
             return (resp, Data(json.utf8))
         }
 
@@ -283,7 +273,7 @@ struct SyncCoordinatorTests {
                 let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
                 return (resp, Data(threadMetadataJSON(id: "thread-1", historyId: "1000").utf8))
             }
-            if url.contains("api.github.com/notifications") {
+            if url.contains("api.github.com/search/issues") {
                 let resp = HTTPURLResponse(
                     url: request.url!,
                     statusCode: 304,
@@ -366,7 +356,7 @@ struct SyncCoordinatorTests {
                 return (resp, Data(profileJSON(historyId: "1050").utf8))
             }
 
-            if url.contains("api.github.com/notifications") {
+            if url.contains("api.github.com/search/issues") {
                 let resp = HTTPURLResponse(url: request.url!, statusCode: 304, httpVersion: "HTTP/1.1", headerFields: [:])!
                 return (resp, Data())
             }
@@ -409,7 +399,7 @@ struct SyncCoordinatorTests {
                 let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
                 return (resp, Data(threadMetadataJSON(id: "thread-stale", historyId: "999").utf8))
             }
-            if url.contains("api.github.com/notifications") {
+            if url.contains("api.github.com/search/issues") {
                 let resp = HTTPURLResponse(url: request.url!, statusCode: 304, httpVersion: "HTTP/1.1", headerFields: [:])!
                 return (resp, Data())
             }
@@ -470,7 +460,7 @@ struct SyncCoordinatorTests {
                 return (resp, Data(profileJSON(historyId: "2000").utf8))
             }
 
-            if url.contains("api.github.com/notifications") {
+            if url.contains("api.github.com/search/issues") {
                 let resp = HTTPURLResponse(url: request.url!, statusCode: 304, httpVersion: "HTTP/1.1", headerFields: [:])!
                 return (resp, Data())
             }
@@ -505,7 +495,7 @@ struct SyncCoordinatorTests {
         MockURLProtocol.register { request in
             guard let url = request.url?.absoluteString else { return nil }
 
-            if url.contains("api.github.com/notifications") {
+            if url.contains("api.github.com/search/issues") {
                 let resp = HTTPURLResponse(
                     url: request.url!,
                     statusCode: 200,
@@ -515,7 +505,7 @@ struct SyncCoordinatorTests {
                         "ETag": initialETag
                     ]
                 )!
-                let json = gitHubNotificationsJSON(notifications: [("gh-notif-1", "CI check failure", 42)])
+                let json = gitHubSearchIssuesJSON(issues: [("gh-notif-1", "CI check failure", 42)])
                 return (resp, Data(json.utf8))
             }
 
@@ -557,7 +547,7 @@ struct SyncCoordinatorTests {
         MockURLProtocol.register { request in
             guard let url = request.url?.absoluteString else { return nil }
 
-            if url.contains("api.github.com/notifications") {
+            if url.contains("api.github.com/search/issues") {
                 receivedIfNoneMatch = request.value(forHTTPHeaderField: "If-None-Match")
                 let resp = HTTPURLResponse(
                     url: request.url!,
@@ -602,14 +592,14 @@ struct SyncCoordinatorTests {
         MockURLProtocol.register { request in
             guard let url = request.url?.absoluteString else { return nil }
 
-            if url.contains("api.github.com/notifications") {
+            if url.contains("api.github.com/search/issues") {
                 let resp = HTTPURLResponse(
                     url: request.url!,
                     statusCode: 200,
                     httpVersion: "HTTP/1.1",
                     headerFields: ["Content-Type": "application/json", "ETag": "W/\"etag-v1\""]
                 )!
-                return (resp, Data(gitHubNotificationsJSON(notifications: [("notif-1", "First Notif", 1)]).utf8))
+                return (resp, Data(gitHubSearchIssuesJSON(issues: [("notif-1", "First Notif", 1)]).utf8))
             }
             if url.contains("/profile") {
                 let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
@@ -645,14 +635,14 @@ struct SyncCoordinatorTests {
         MockURLProtocol.register { request in
             guard let url = request.url?.absoluteString else { return nil }
 
-            if url.contains("api.github.com/notifications") {
+            if url.contains("api.github.com/search/issues") {
                 let resp = HTTPURLResponse(
                     url: request.url!,
                     statusCode: 200,
                     httpVersion: "HTTP/1.1",
                     headerFields: ["Content-Type": "application/json", "ETag": "W/\"etag-v2\""]
                 )!
-                return (resp, Data(gitHubNotificationsJSON(notifications: [("notif-2", "Second Notif", 2)]).utf8))
+                return (resp, Data(gitHubSearchIssuesJSON(issues: [("notif-2", "Second Notif", 2)]).utf8))
             }
             if url.contains("/history?") {
                 let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
@@ -669,7 +659,7 @@ struct SyncCoordinatorTests {
         try await Task.sleep(nanoseconds: 50_000_000)
         let updatedItems = await collector.lastItems(for: .gitHub)
         #expect(updatedItems?.count == 1)
-        #expect(updatedItems?.first?.id == "notif-2")
+        #expect(updatedItems?.first?.id == "owner/repo#2")
     }
 
     @Test("System sleep and wake transitions manage polling state properly")

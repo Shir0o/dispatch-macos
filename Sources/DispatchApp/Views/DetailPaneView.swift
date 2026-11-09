@@ -452,9 +452,13 @@ public struct DetailPaneView: View {
             do {
                 try await AgentDispatchService().dispatch(
                     payload: payload,
-                    preferredTerminal: preferencesStore.preferredTerminal
+                    preferredTerminal: preferencesStore.preferredTerminal,
+                    agent: preferencesStore.preferredAgent,
+                    agentCommand: preferencesStore.agentCommand
                 )
-                store.showToast("Copied issue context to clipboard")
+                store.showToast(preferencesStore.preferredAgent == .none
+                    ? "Copied issue context to clipboard"
+                    : "Copied \(preferencesStore.preferredAgent.rawValue) command — paste in your terminal")
             } catch {
                 store.showToast("Dispatch error: \(error.localizedDescription)")
             }
