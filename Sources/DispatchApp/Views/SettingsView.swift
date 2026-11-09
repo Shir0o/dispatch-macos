@@ -45,7 +45,7 @@ public struct SettingsView: View {
                     Label("Agent Dispatch", systemImage: "sparkles")
                 }
         }
-        .frame(width: 540, height: 440)
+        .frame(width: 540, height: 520)
         .padding(20)
         .onAppear {
             tempGitHubPAT = preferencesStore.githubPAT
@@ -163,11 +163,25 @@ public struct SettingsView: View {
                     Text("Open Work Backfill")
                         .font(.headline)
 
+                    Text("GitHub Users or Organizations")
+                        .font(.subheadline.weight(.semibold))
+
+                    TextField("@username or organization", text: trackedOwnersBinding, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(2...4)
+
+                    Text("One account per line. Dispatch loads every open issue and pull request across all repositories owned by these users or organizations.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text("Repositories (optional)")
+                        .font(.subheadline.weight(.semibold))
+
                     TextField("owner/repo", text: trackedRepositoriesBinding, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
-                        .lineLimit(3...6)
+                        .lineLimit(2...4)
 
-                    Text("One repository per line. Dispatch loads every open issue and pull request from these repositories at launch. Leave empty to include everything you are involved with.")
+                    Text("Narrow the backfill to specific repositories, one per line. Leave both lists empty to include everything you are involved with.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -311,6 +325,18 @@ public struct SettingsView: View {
             get: { preferencesStore.trackedRepositories.joined(separator: "\n") },
             set: { newValue in
                 preferencesStore.trackedRepositories = newValue
+                    .split(whereSeparator: { $0 == "\n" || $0 == "," })
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            }
+        )
+    }
+
+    private var trackedOwnersBinding: Binding<String> {
+        Binding(
+            get: { preferencesStore.trackedOwners.joined(separator: "\n") },
+            set: { newValue in
+                preferencesStore.trackedOwners = newValue
                     .split(whereSeparator: { $0 == "\n" || $0 == "," })
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }

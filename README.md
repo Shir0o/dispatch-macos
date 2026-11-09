@@ -48,7 +48,7 @@ Software developers are constantly context-switching between asynchronous person
   * `#` or `Delete`: Trash / unsubscribe
   * `Cmd+O`: Open thread / issue directly in default browser
 * **Non-Destructive Invariant:** Fast triage (`e`) archives personal inbox messages or dismisses notifications. It **never** mutates public GitHub issue states (closing an issue remains an explicit action).
-* **Open Work Backfill:** On launch, Dispatch loads every open issue and pull request from the repositories you track (or everything you are involved with when no repositories are configured), so work that predates the install still appears. Live notification threads supersede their backfilled copies, and dismissed backfilled work is hidden locally rather than written back to GitHub.
+* **Open Work Backfill:** On launch, Dispatch loads every open issue and pull request from the GitHub users/organizations you track (all repositories they own, configured once) or from explicit repositories (or everything you are involved with when neither is configured), so work that predates the install still appears. Live notification threads supersede their backfilled copies, and dismissed backfilled work is hidden locally rather than written back to GitHub.
 * **Local Coding Agent Dispatch (`Cmd+Shift+A`):**
   * Bundles issue title, reproduction steps, comments, labels, and local repo paths into a structured markdown prompt.
   * Dispatches the prompt to `NSPasteboard.general` and activates your configured local CLI agent (`claude`, `opencode`, `antigravity`) in your favorite terminal or IDE (Terminal, iTerm2, Ghostty, VS Code).

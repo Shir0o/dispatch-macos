@@ -27,6 +27,7 @@ public actor SyncCoordinator {
 
     // Backfill scope, configured from preferences before `start()`.
     private var backfillRepositories: [String] = []
+    private var backfillOwners: [String] = []
     private var backfillLogin: String?
     private var hasCompletedGitHubBackfill = false
     private var isBackfilling = false
@@ -113,10 +114,17 @@ public actor SyncCoordinator {
 
     // MARK: - Open Work Backfill
 
-    /// Configures which repositories the backfill scans. An empty list means
-    /// "every open issue and pull request the user is involved with".
-    public func setBackfillConfiguration(repositories: [String], login: String?) {
+    /// Configures the backfill scope. `repositories` accepts `owner/repo`
+    /// entries and `owners` accepts GitHub users or organizations whose entire
+    /// repository set should be scanned. When both are empty the backfill
+    /// covers "every open issue and pull request the user is involved with".
+    public func setBackfillConfiguration(
+        repositories: [String],
+        owners: [String] = [],
+        login: String?
+    ) {
         self.backfillRepositories = repositories
+        self.backfillOwners = owners
         self.backfillLogin = login
     }
 
@@ -125,10 +133,14 @@ public actor SyncCoordinator {
     /// canonical issue/PR identity.
     public func performGitHubBackfill(
         repositories: [String]? = nil,
+        owners: [String]? = nil,
         login: String? = nil
     ) async {
         if let repositories {
             backfillRepositories = repositories
+        }
+        if let owners {
+            backfillOwners = owners
         }
         if let login {
             backfillLogin = login
@@ -141,6 +153,7 @@ public actor SyncCoordinator {
         do {
             let items = try await gitHubService.fetchOpenIssuesAndPullRequests(
                 repositories: backfillRepositories,
+                owners: backfillOwners,
                 login: backfillLogin
             )
             hasCompletedGitHubBackfill = true
