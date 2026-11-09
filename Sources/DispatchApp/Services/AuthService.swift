@@ -11,6 +11,7 @@ public enum AuthError: LocalizedError, Sendable, Equatable {
     case encodingFailed
     case decodingFailed
     case invalidAuthURL
+    case invalidClientId
     case sessionStartFailed
     case missingAuthorizationCode
     case oauthError(String)
@@ -34,6 +35,8 @@ public enum AuthError: LocalizedError, Sendable, Equatable {
             return "Failed to decode credential data from Keychain as UTF-8 string."
         case .invalidAuthURL:
             return "Failed to construct Google OAuth authorization URL."
+        case .invalidClientId:
+            return "Google Client ID must look like <id>.apps.googleusercontent.com (an OAuth client of type iOS)."
         case .sessionStartFailed:
             return "Failed to start ASWebAuthenticationSession."
         case .missingAuthorizationCode:
@@ -73,6 +76,17 @@ private final class WebAuthPresentationContextProvider: NSObject, ASWebAuthentic
     }
 }
 
+// MARK: - GoogleRedirect
+
+/// The custom-scheme redirect that Google issues for native OAuth clients.
+///
+/// Google derives the redirect from the client ID itself, so it cannot be a
+/// constant: `com.googleusercontent.apps.<client-id-prefix>:/oauth2redirect`.
+public struct GoogleRedirect: Sendable, Equatable {
+    public let callbackScheme: String
+    public let redirectURI: String
+}
+
 // MARK: - AuthService
 
 public actor AuthService {
@@ -82,8 +96,29 @@ public actor AuthService {
     public static let gitHubPATKey = "github_pat"
 
     public static let serviceName = "com.shir0o.dispatch"
-    public static let callbackScheme = "com.googleusercontent.apps.dispatch"
-    public static let redirectURI = "com.googleusercontent.apps.dispatch:/oauth2redirect"
+
+    /// Builds the redirect Google expects for the given native client ID.
+    ///
+    /// Google only accepts `com.googleusercontent.apps.<prefix>:/oauth2redirect`
+    /// for installed-app clients, and the prefix must be the client ID with the
+    /// `.apps.googleusercontent.com` suffix removed. Sending anything else makes
+    /// Google reject the request with `Error 400: redirect_uri_mismatch`.
+    public static func googleRedirect(for clientId: String) throws -> GoogleRedirect {
+        let suffix = ".apps.googleusercontent.com"
+        let trimmed = clientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasSuffix(suffix) else {
+            throw AuthError.invalidClientId
+        }
+        let prefix = String(trimmed.dropLast(suffix.count))
+        guard !prefix.isEmpty, !prefix.contains("/"), !prefix.contains(":"), !prefix.contains(" ") else {
+            throw AuthError.invalidClientId
+        }
+        let scheme = "com.googleusercontent.apps.\(prefix)"
+        return GoogleRedirect(
+            callbackScheme: scheme,
+            redirectURI: "\(scheme):/oauth2redirect"
+        )
+    }
 
     private let session: URLSession
     public private(set) var activeCodeVerifier: String?
@@ -190,24 +225,54 @@ public actor AuthService {
             .trimmingCharacters(in: CharacterSet(charactersIn: "="))
     }
 
-    // MARK: - Google OAuth
+    // MARK: - Web Auth Session
+
+    /// Keeps the running session alive. `ASWebAuthenticationSession` is not
+    /// guaranteed to retain itself for the lifetime of the user interaction.
+    @MainActor
+    private final class WebAuthSessionHolder {
+        static let shared = WebAuthSessionHolder()
+        var session: ASWebAuthenticationSession?
+    }
+
+    /// Builds the completion handler for `ASWebAuthenticationSession`.
+    ///
+    /// Safari delivers this callback on the
+    /// `com.apple.NSXPCConnection.m-user.com.apple.SafariLaunchAgent` queue, not
+    /// on the main queue. Writing the closure inline inside a `@MainActor`
+    /// function gives it main-actor isolation, so Swift inserts an executor
+    /// assertion and the process traps with `EXC_BREAKPOINT (SIGTRAP)` as soon
+    /// as the sheet closes (success, cancel, or an OAuth error such as
+    /// `redirect_uri_mismatch`). Keep this factory `nonisolated` and the
+    /// returned closure `@Sendable`.
+    nonisolated static func makeWebAuthCompletionHandler(
+        _ continuation: CheckedContinuation<URL, any Error>
+    ) -> @Sendable (URL?, (any Error)?) -> Void {
+        { callbackURL, error in
+            if let error {
+                continuation.resume(throwing: error)
+                return
+            }
+            guard let callbackURL else {
+                continuation.resume(throwing: AuthError.missingAuthorizationCode)
+                return
+            }
+            continuation.resume(returning: callbackURL)
+        }
+    }
 
     @MainActor
     private func runWebAuthSession(url: URL, callbackScheme: String) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) { callbackURL, error in
-                if let error = error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                guard let callbackURL = callbackURL else {
-                    continuation.resume(throwing: AuthError.missingAuthorizationCode)
-                    return
-                }
-                continuation.resume(returning: callbackURL)
-            }
+        defer { WebAuthSessionHolder.shared.session = nil }
+        return try await withCheckedThrowingContinuation { continuation in
+            let session = ASWebAuthenticationSession(
+                url: url,
+                callbackURLScheme: callbackScheme,
+                completionHandler: Self.makeWebAuthCompletionHandler(continuation)
+            )
             session.presentationContextProvider = WebAuthPresentationContextProvider.shared
             session.prefersEphemeralWebBrowserSession = false
+            WebAuthSessionHolder.shared.session = session
             if !session.start() {
                 continuation.resume(throwing: AuthError.sessionStartFailed)
             }
@@ -215,6 +280,7 @@ public actor AuthService {
     }
 
     public func startGoogleOAuth(clientId: String) async throws -> String {
+        let redirect = try Self.googleRedirect(for: clientId)
         let verifier = generateCodeVerifier()
         self.activeCodeVerifier = verifier
         let challenge = generateCodeChallenge(from: verifier)
@@ -222,7 +288,7 @@ public actor AuthService {
         var components = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")
         components?.queryItems = [
             URLQueryItem(name: "client_id", value: clientId),
-            URLQueryItem(name: "redirect_uri", value: Self.redirectURI),
+            URLQueryItem(name: "redirect_uri", value: redirect.redirectURI),
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "scope", value: "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/userinfo.email"),
             URLQueryItem(name: "code_challenge", value: challenge),
@@ -235,7 +301,7 @@ public actor AuthService {
             throw AuthError.invalidAuthURL
         }
 
-        let callbackURL = try await runWebAuthSession(url: authURL, callbackScheme: Self.callbackScheme)
+        let callbackURL = try await runWebAuthSession(url: authURL, callbackScheme: redirect.callbackScheme)
 
         guard let queryItems = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems else {
             throw AuthError.missingAuthorizationCode
@@ -257,6 +323,7 @@ public actor AuthService {
         clientId: String,
         codeVerifier: String
     ) async throws -> (accessToken: String, refreshToken: String?, expiresIn: Int) {
+        let redirect = try Self.googleRedirect(for: clientId)
         guard let tokenURL = URL(string: "https://oauth2.googleapis.com/token") else {
             throw AuthError.invalidAuthURL
         }
@@ -270,7 +337,7 @@ public actor AuthService {
             "client_id": clientId,
             "code_verifier": codeVerifier,
             "grant_type": "authorization_code",
-            "redirect_uri": Self.redirectURI
+            "redirect_uri": redirect.redirectURI
         ]
         request.httpBody = formURLEncode(parameters)
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AuthenticationServices
 
 private struct AuthServiceKey: EnvironmentKey {
     static let defaultValue: AuthService = AuthService()
@@ -26,6 +27,11 @@ public struct SettingsView: View {
     @State private var errorMessage: String? = nil
 
     public init() {}
+
+    /// Redirect URI Google expects for the client ID currently entered above.
+    private var derivedRedirectURI: String? {
+        try? AuthService.googleRedirect(for: preferencesStore.googleClientId).redirectURI
+    }
 
     public var body: some View {
         TabView {
@@ -58,11 +64,11 @@ public struct SettingsView: View {
                     TextField("Google Client ID:", text: Bindable(preferencesStore).googleClientId)
                         .textFieldStyle(.roundedBorder)
 
-                    Text("Register a native macOS OAuth client in Google Cloud Console with redirect scheme:")
+                    Text("Create an OAuth client ID of type **iOS** in Google Cloud Console (not Web or Desktop). Google derives the redirect URI from that client ID:")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    Text("com.googleusercontent.apps.<client-id>:/oauth2redirect")
+                    Text(derivedRedirectURI ?? "com.googleusercontent.apps.<client-id>:/oauth2redirect")
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
                         .foregroundStyle(.secondary)
@@ -296,7 +302,13 @@ public struct SettingsView: View {
             )
             googleStatus = "Signed in to Gmail successfully!"
         } catch {
-            errorMessage = "Google Sign-In failed: \(error.localizedDescription)"
+            let nsError = error as NSError
+            if nsError.domain == ASWebAuthenticationSessionError.errorDomain,
+               nsError.code == ASWebAuthenticationSessionError.Code.canceledLogin.rawValue {
+                errorMessage = "Google Sign-In was cancelled."
+            } else {
+                errorMessage = "Google Sign-In failed: \(error.localizedDescription)"
+            }
         }
     }
 
