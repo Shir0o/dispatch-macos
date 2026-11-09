@@ -11,7 +11,12 @@ name: Release
 # Release Please follows Conventional Commits: `fix:` -> patch, `feat:` -> minor,
 # `feat!:` / `BREAKING CHANGE:` -> major.
 #
-# Optional repository secrets enable Developer ID signing + notarization:
+# Optional repository secrets:
+#   RELEASE_PLEASE_TOKEN        PAT or GitHub App token used by Release Please.
+#                               PRs opened with the default GITHUB_TOKEN count as
+#                               untrusted: their CI runs wait for approval and can
+#                               expire without reporting the required
+#                               "Build and test" check. Falls back to GITHUB_TOKEN.
 #   MACOS_CERTIFICATE           base64 of a .p12 "Developer ID Application" certificate
 #   MACOS_CERTIFICATE_PASSWORD  password for the .p12
 #   KEYCHAIN_PASSWORD           any random password for the temporary CI keychain
@@ -68,6 +73,10 @@ jobs:
         id: release
         uses: googleapis/release-please-action@v5
         with:
+          # A PAT or GitHub App token makes release PRs trusted, so their CI
+          # runs start without approval and report "Build and test" for the
+          # branch ruleset. Without the secret this falls back to GITHUB_TOKEN.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
