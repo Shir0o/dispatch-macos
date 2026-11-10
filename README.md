@@ -42,13 +42,15 @@ Software developers are constantly context-switching between asynchronous person
 * **Stream Isolation:** Dedicated workspaces for **Gmail** and **GitHub**, preventing developer noise and CI alerts from polluting personal correspondence.
 * **Vim/Superhuman Keyboard Navigation:**
   * `j` / `k`: Next / Previous item
-  * `e`: Archive email (removes `INBOX` label) or mark GitHub notification as done
-  * `s`: Star / pin item
-  * `u`: Mark unread
-  * `#` or `Delete`: Trash / unsubscribe
-  * `Cmd+O`: Open thread / issue directly in default browser
-* **Non-Destructive Invariant:** Fast triage (`e`) archives personal inbox messages or dismisses notifications. It **never** mutates public GitHub issue states (closing an issue remains an explicit action).
-* **Open Work Backfill:** On launch, Dispatch loads every open issue and pull request from the GitHub users/organizations you track (all repositories they own, configured once) or from explicit repositories (or everything you are involved with when neither is configured), so work that predates the install still appears. Live notification threads supersede their backfilled copies, and dismissed backfilled work is hidden locally rather than written back to GitHub.
+  * `e`: Archive email in Gmail, or hide an item in Open Work
+  * `s`: Star / pin an email (Gmail only)
+  * `u`: Mark unread (Gmail only)
+  * `#` or `Delete`: Trash / unsubscribe (Gmail only)
+  * `Cmd+O`: Open the selected email or Open Work item in your browser
+  * `Cmd+Shift+A`: Dispatch the selected item to a local coding agent
+  * `Cmd+Z`: Undo the last Open Work hide while the banner is visible
+* **Non-Destructive Invariant:** Fast triage (`e`) archives personal inbox messages or hides Open Work locally. It **never** mutates public GitHub issue states (closing an issue remains an explicit action).
+* **GitHub Open Work:** One involvement query replaces both the notification feed and the backfill. Dispatch imports every open issue and pull request involving you — authored, assigned, mentioned, or commented on — groups it by repository, and refreshes it every 15 minutes after you first open the workspace. There is no repository configuration, no unread state, and no silent truncation. See [GitHub Open Work](#github-open-work).
 * **Local Coding Agent Dispatch (`Cmd+Shift+A`):**
   * Bundles issue title, reproduction steps, comments, labels, and local repo paths into a structured markdown prompt.
   * Dispatches the prompt to `NSPasteboard.general` and activates your configured local CLI agent (`claude`, `opencode`, `antigravity`) in your favorite terminal or IDE (Terminal, iTerm2, Ghostty, VS Code).
@@ -62,6 +64,36 @@ Software developers are constantly context-switching between asynchronous person
 
 ---
 
+## GitHub Open Work
+
+The GitHub workspace is one **Open Work** list, not a notification inbox. It runs one GitHub search — `is:open involves:@me`, sorted by most recently updated — and holds the result in memory.
+
+* **Scope:** every open issue and pull request this token can read that involves the authenticated user: authored, assigned, mentioned, or commented on.
+* **Not included:** subscription-only items and review requests that do not otherwise involve you. GitHub's `involves:@me` qualifier does not cover them, so they will not appear.
+* **Refresh:** the first time you open the GitHub workspace in a launch, Dispatch fetches immediately; after that it refreshes every 15 minutes while the app is running. The header's Refresh button is always available.
+* **No unread state:** imported work is never counted as unread. The GitHub sidebar row shows a neutral “N open items” count, not a badge.
+* **Grouping:** items are grouped by repository, newest first, with a visible count per repository. This version has no search box, kind filter, or repository-level hide.
+* **400-item cap:** Dispatch fetches at most 400 items and follows at most four pages. When more work matches, the header discloses how many were fetched and how many matched; GitHub itself reports at most 1,000. A truncated success still replaces the list but never drops hidden keys.
+* **Failures keep the list:** a failed refresh leaves the previous items, counts, and last-success time in place, keeps hidden items hidden, and shows the matching action — “Update token” for 401, “Retry at HH:MM” for a 403 with a reset time, “Update token” for a 403 without one, and “Retry” for server, decoding, transport, and not-found errors. A first-run failure shows the error instead of an empty “caught up” state.
+* **Hiding is local:** “Hide from Open Work” (`e`) removes a row on this Mac, persists the key across relaunch, and offers Undo for six seconds (`Cmd+Z` also works while the banner is alive). There is no per-item restore; “Clear all hidden keys” is the bulk inverse. Hidden keys are keyed on `owner/repo#number`, so a repository rename or transfer can resurrect an old hide.
+* **Detail and dispatch:** the detail pane shows the issue or pull request body and comment timeline, “Open on GitHub”, “Hide from Open Work”, and `Cmd+Shift+A` dispatch. If the detail fetch fails, the alert offers “Send title only” so the prompt still goes out.
+* **Tokens:** a classic PAT with `repo` read scope sees the full involvement set. Fine-grained PATs and SSO-protected organizations may return a smaller set; the view states that the scope is whatever the token can read. Explicit fine-grained and SSO support is a documented v1 limitation.
+
+### Shortcuts
+
+| Key | Gmail | GitHub Open Work |
+| --- | --- | --- |
+| `j` / `k` | Next / previous message | Next / previous item |
+| `e` | Archive | Hide from Open Work |
+| `s` | Star | Not available in Open Work |
+| `u` | Mark unread | Not available in Open Work |
+| `#` | Trash / unsubscribe | Not available in Open Work |
+| `Cmd+O` | Open in Gmail | Open on GitHub |
+| `Cmd+Shift+A` | Dispatch to agent | Dispatch to agent |
+| `Cmd+Z` | — | Undo the last hide while the banner is visible |
+
+---
+
 ## Technical Architecture
 
 Dispatch is structured around Swift 6 structured concurrency and isolated background actors:
@@ -71,6 +103,7 @@ flowchart TD
     subgraph UI ["Presentation Layer (SwiftUI / AppKit)"]
         SidebarView["SidebarView (NavigationSplitView)"]
         StreamView["TriageStreamView (LazyVStack / List)"]
+        OpenWorkView["OpenWorkView (Grouped List)"]
         DetailView["DetailPaneView (SwiftUI + Recycled WKWebView)"]
         KeyHandler["KeyboardShortcutModifier (Vim/Superhuman + FocusGuard)"]
     end
@@ -78,6 +111,7 @@ flowchart TD
     subgraph State ["State & Coordination Layer"]
         PreferencesStore["PreferencesStore (@Observable)"]
         TriageStore["TriageStore (@Observable @MainActor)"]
+        OpenWorkStore["OpenWorkStore (@Observable @MainActor)"]
         SyncCoordinator["SyncCoordinator (Swift Actor)"]
         AgentDispatch["AgentDispatchService (Clipboard & App Activator)"]
     end
@@ -85,26 +119,32 @@ flowchart TD
     subgraph Services ["External Network & Security Layer"]
         AuthService["AuthService (ASWebAuthenticationSession + Keychain)"]
         GmailService["GmailService (REST API + users.threads)"]
-        GitHubService["GitHubService (REST API v3 /notifications & /check-runs)"]
+        GitHubService["GitHubService (REST API v3 /search/issues)"]
         PathMonitor["NWPathMonitor (Network Reachability)"]
         WorkspaceMonitor["NSWorkspace (Sleep / Wake Notifications)"]
     end
 
-    KeyHandler -->|Triage Action (e / s / #)| TriageStore
+    KeyHandler -->|Triage Action| TriageStore
+    KeyHandler -->|Open Work Action| OpenWorkStore
     TriageStore --> StreamView
+    OpenWorkStore --> OpenWorkView
     StreamView --> DetailView
+    OpenWorkView --> DetailView
     SidebarView --> TriageStore
+    SidebarView --> OpenWorkStore
 
-    TriageStore <-->|Load / Save Snapshot (Atomic Synchronous)| DiskStorage["~/Library/Application Support/Dispatch/snapshot.json"]
+    TriageStore <-->|Load / Save Gmail Snapshot (Atomic Synchronous)| DiskStorage["~/Library/Application Support/Dispatch/snapshot.json"]
     TriageStore -->|Optimistic Archive / Star / Trash| GmailService
-    TriageStore -->|Optimistic Dismiss / Unsubscribe| GitHubService
+    OpenWorkStore -->|One Involvement Search| GitHubService
+    OpenWorkStore <-->|Hidden Keys| HiddenKeys["UserDefaults (dispatch.openWorkHiddenKeys)"]
     TriageStore <-->|Dispatch Trigger| AgentDispatch
+    OpenWorkStore <-->|Dispatch Trigger| AgentDispatch
     AgentDispatch -->|Copy Prompt| Pasteboard["NSPasteboard.general"]
     AgentDispatch -->|Activate App| ExternalTerminal["External Terminal / IDE"]
 
-    SyncCoordinator -->|Deliver Polled Items| TriageStore
+    SyncCoordinator -->|Deliver Gmail Items| TriageStore
     SyncCoordinator --> GmailService
-    SyncCoordinator --> GitHubService
+    SyncCoordinator -->|Refresh If Due| OpenWorkStore
     SyncCoordinator --> AuthService
 
     PathMonitor --> SyncCoordinator
@@ -134,9 +174,9 @@ dispatch-macos/
 ├── Sources/
 │   └── DispatchApp/
 │       ├── App/                     # Application lifecycle & composition root
-│       ├── Models/                  # Domain entities (TriageItem, TriageKind)
-│       ├── State/                   # Bounded in-memory observable store & preferences
-│       ├── Services/                # Gmail, GitHub, Auth, SyncCoordinator, AgentDispatch
+│       ├── Models/                  # Domain entities (TriageItem, OpenWorkItem, OpenWorkPresentation)
+│       ├── State/                   # Bounded in-memory observable stores & preferences
+│       ├── Services/                # Gmail, GitHub, Auth, SyncCoordinator, OpenWorkDispatcher, AgentDispatch
 │       └── Views/                   # NavigationSplitView, Stream, Detail & RecycledWKWebView
 ├── Tests/
 │   └── DispatchAppTests/            # Concurrency, state machine, and parsing unit tests
@@ -159,7 +199,7 @@ dispatch-macos/
 * **Operating System:** macOS 14.0 (Sonoma) or newer.
 * **Toolchain:** Xcode 15+ or Swift 6.0 toolchain.
 * **Google Cloud Project (for Personal OAuth):** A standard Google Cloud Console Desktop OAuth Client ID (for personal Gmail REST API access).
-* **GitHub Personal Access Token:** Classic or fine-grained token with `notifications` and `repo` read scopes.
+* **GitHub Personal Access Token:** Classic token with `repo` read scope. Fine-grained tokens work, but may return a smaller result set scoped to what the token can read.
 
 ### Build and Package
 

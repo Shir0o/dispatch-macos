@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// Primary navigation sidebar providing workspace selection, GitHub smart filters,
-/// and live sync status.
+/// Primary navigation sidebar providing workspace selection, Gmail unread
+/// counts, and the neutral Open Work item count.
 public struct SidebarView: View {
     @Environment(TriageStore.self) private var store
+    @Environment(OpenWorkStore.self) private var openWorkStore
     @Environment(\.openSettings) private var openSettings
 
     public init() {}
@@ -12,12 +13,14 @@ public struct SidebarView: View {
         VStack(spacing: 0) {
             List {
                 Section("Workspaces") {
+                    let gmailUnread = store.unreadCount(for: .gmail)
                     workspaceRow(
                         title: "Gmail",
                         icon: "envelope.fill",
                         iconColor: .red,
                         source: .gmail,
-                        unreadCount: store.unreadCount(for: .gmail)
+                        badge: gmailUnread > 0 ? "\(gmailUnread)" : nil,
+                        badgeIsUnread: true
                     )
 
                     workspaceRow(
@@ -25,82 +28,17 @@ public struct SidebarView: View {
                         icon: "chevron.left.forwardslash.chevron.right",
                         iconColor: .purple,
                         source: .gitHub,
-                        unreadCount: store.unreadCount(for: .gitHub)
+                        badge: openWorkBadge,
+                        badgeIsUnread: false
                     )
-                }
-
-                if store.activeWorkspace == .gitHub {
-                    Section("GitHub Filters") {
-                        ForEach(GitHubFilter.allCases) { filter in
-                            Button {
-                                store.gitHubFilter = filter
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: filter.iconName)
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(filterColor(for: filter))
-                                        .frame(width: 18)
-
-                                    Text(filter.rawValue)
-                                        .font(.system(.body, design: .default))
-                                        .foregroundStyle(store.gitHubFilter == filter ? Color.primary : Color.secondary)
-
-                                    Spacer()
-
-                                    let count = filterCount(for: filter)
-                                    if count > 0 {
-                                        Text("\(count)")
-                                            .font(.caption2.weight(.bold))
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(
-                                                store.gitHubFilter == filter
-                                                    ? Color.accentColor.opacity(0.18)
-                                                    : Color.secondary.opacity(0.15),
-                                                in: Capsule()
-                                            )
-                                            .foregroundStyle(
-                                                store.gitHubFilter == filter
-                                                    ? Color.accentColor
-                                                    : Color.secondary
-                                            )
-                                    }
-                                }
-                                .padding(.vertical, 4)
-                                .padding(.horizontal, 6)
-                                .background(
-                                    store.gitHubFilter == filter
-                                        ? Color.accentColor.opacity(0.12)
-                                        : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
                 }
             }
             .listStyle(.sidebar)
 
             Divider()
 
-            // Bottom Status Bar
+            // Bottom status bar. The GitHub refresh state lives in Open Work.
             HStack(spacing: 8) {
-                if store.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Syncing...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 7, height: 7)
-                    Text("Live")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
                 Spacer()
 
                 Button {
@@ -122,6 +60,16 @@ public struct SidebarView: View {
         .frame(minWidth: 200, idealWidth: 220, maxWidth: 280)
     }
 
+    // MARK: - Open Work Badge
+
+    /// A neutral count once work is loaded and visible; otherwise an em dash.
+    private var openWorkBadge: String {
+        let isLoaded = openWorkStore.status.phase == .ready || !openWorkStore.allItems.isEmpty
+        guard isLoaded, openWorkStore.visibleCount > 0 else { return "—" }
+        let count = openWorkStore.visibleCount
+        return "\(count) open item\(count == 1 ? "" : "s")"
+    }
+
     // MARK: - Subviews
 
     @ViewBuilder
@@ -130,7 +78,8 @@ public struct SidebarView: View {
         icon: String,
         iconColor: Color,
         source: TriageSource,
-        unreadCount: Int
+        badge: String?,
+        badgeIsUnread: Bool
     ) -> some View {
         let isSelected = store.activeWorkspace == source
 
@@ -149,16 +98,18 @@ public struct SidebarView: View {
 
                 Spacer()
 
-                if unreadCount > 0 {
-                    Text("\(unreadCount)")
+                if let badge {
+                    Text(badge)
                         .font(.caption2.weight(.bold))
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
                         .background(
-                            isSelected ? Color.accentColor : Color.secondary.opacity(0.2),
+                            badgeBackground(isSelected: isSelected, badgeIsUnread: badgeIsUnread),
                             in: Capsule()
                         )
-                        .foregroundStyle(isSelected ? Color.white : Color.primary)
+                        .foregroundStyle(
+                            badgeForeground(isSelected: isSelected, badgeIsUnread: badgeIsUnread)
+                        )
                 }
             }
             .padding(.vertical, 5)
@@ -171,45 +122,17 @@ public struct SidebarView: View {
         .buttonStyle(.plain)
     }
 
-    private func filterColor(for filter: GitHubFilter) -> Color {
-        switch filter {
-        case .all:
-            return .secondary
-        case .ciAlerts:
-            return .orange
-        case .mentions:
-            return .purple
-        case .reviewRequests:
-            return .blue
+    private func badgeBackground(isSelected: Bool, badgeIsUnread: Bool) -> Color {
+        if badgeIsUnread {
+            return isSelected ? Color.accentColor : Color.secondary.opacity(0.2)
         }
+        return Color.secondary.opacity(0.15)
     }
 
-    private func filterCount(for filter: GitHubFilter) -> Int {
-        switch filter {
-        case .all:
-            return store.gitHubItems.count
-        case .ciAlerts:
-            return store.gitHubItems.filter { item in
-                item.tags.contains("ci_activity") ||
-                {
-                    if case .gitHubPullRequest(_, _, _, _, let ci) = item.kind {
-                        return ci == .completedFailure || ci == .queued || ci == .inProgress
-                    }
-                    return false
-                }()
-            }.count
-        case .mentions:
-            return store.gitHubItems.filter { $0.tags.contains("mention") || $0.tags.contains("team_mention") }.count
-        case .reviewRequests:
-            return store.gitHubItems.filter { item in
-                item.tags.contains("review_requested") ||
-                {
-                    if case .gitHubPullRequest(_, _, _, let r, _) = item.kind {
-                        return r == .pending || r == .changesRequested
-                    }
-                    return false
-                }()
-            }.count
+    private func badgeForeground(isSelected: Bool, badgeIsUnread: Bool) -> Color {
+        if badgeIsUnread {
+            return isSelected ? Color.white : Color.primary
         }
+        return Color.secondary
     }
 }

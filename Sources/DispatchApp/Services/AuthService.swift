@@ -470,6 +470,69 @@ public actor AuthService {
 
     // MARK: - GitHub Authentication
 
+    /// Presence check used by the composition root and Settings before any view
+    /// body runs. Reads the Keychain directly; it never throws.
+    public nonisolated static func hasGitHubPAT() -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: gitHubPATKey,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+    }
+
+    /// Writes a PAT to the Keychain with `SecItemAdd`/`SecItemUpdate` and
+    /// verifies the item exists afterwards. Returns `false` on any failure.
+    @discardableResult
+    public nonisolated static func saveGitHubPAT(_ token: String) -> Bool {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else {
+            return false
+        }
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: gitHubPATKey
+        ]
+
+        let attributesToUpdate: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributesToUpdate as CFDictionary)
+        if updateStatus == errSecItemNotFound {
+            var addQuery = query
+            addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            guard SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess else {
+                return false
+            }
+        } else if updateStatus != errSecSuccess {
+            return false
+        }
+
+        return hasGitHubPAT()
+    }
+
+    /// Copies the legacy `dispatch.githubPAT` UserDefaults value into the
+    /// Keychain and verifies it.
+    ///
+    /// Returns `hasGitHubPAT()` when there is nothing to migrate, `false` when
+    /// the Keychain write or verification fails. The caller keeps the defaults
+    /// value for manual recovery; this helper never deletes it.
+    public nonisolated static func migrateGitHubPAT(from defaults: UserDefaults) -> Bool {
+        let legacyToken = (defaults.string(forKey: "dispatch.githubPAT") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !legacyToken.isEmpty else {
+            return hasGitHubPAT()
+        }
+        return saveGitHubPAT(legacyToken)
+    }
+
     public func validateGitHubPAT(token: String) async throws -> (username: String, scopes: [String]) {
         guard let userURL = URL(string: "https://api.github.com/user") else {
             throw AuthError.invalidResponse

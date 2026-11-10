@@ -111,6 +111,12 @@ public final class AgentDispatchService: Sendable {
 
         await copyToPasteboard(prompt: clipboardText)
 
+        // Clipboard Only: the prompt is the whole result. Do not require a
+        // terminal and do not try to activate one.
+        guard agent != .none else {
+            return clipboardText
+        }
+
         guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: preferredTerminal.bundleIdentifier) else {
             throw AgentDispatchError.applicationNotFound(bundleIdentifier: preferredTerminal.bundleIdentifier)
         }

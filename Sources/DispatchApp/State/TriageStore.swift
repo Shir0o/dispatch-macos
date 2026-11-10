@@ -1,37 +1,14 @@
 import Foundation
 import Observation
 
-/// Smart filter options for GitHub notifications.
-public enum GitHubFilter: String, CaseIterable, Identifiable, Sendable {
-    case all = "All"
-    case ciAlerts = "CI Alerts"
-    case mentions = "Mentions"
-    case reviewRequests = "Review Requests"
-
-    public var id: String { rawValue }
-
-    public var iconName: String {
-        switch self {
-        case .all:
-            return "tray.full"
-        case .ciAlerts:
-            return "exclamationmark.triangle"
-        case .mentions:
-            return "at"
-        case .reviewRequests:
-            return "arrow.triangle.pull"
-        }
-    }
-}
-
 /// Disk persistence format for offline caching.
+///
+/// The retired GitHub arrays remain in the format so snapshots written by older
+/// builds still decode. Only Gmail items are read or written.
 public struct SnapshotData: Codable, Sendable {
     public let gmailItems: [TriageItem]
     public let gitHubItems: [TriageItem]
     public let savedAt: Date
-    /// Canonical keys of GitHub items dismissed locally. Backfilled issues and
-    /// pull requests have no notification thread, so their dismissal only lives
-    /// on this device.
     public let dismissedGitHubKeys: [String]?
 
     public init(
@@ -45,9 +22,39 @@ public struct SnapshotData: Codable, Sendable {
         self.savedAt = savedAt
         self.dismissedGitHubKeys = dismissedGitHubKeys
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case gmailItems
+        case gitHubItems
+        case savedAt
+        case dismissedGitHubKeys
+    }
+
+    /// Tolerant decoder for snapshots written by older builds.
+    ///
+    /// Gmail items and `savedAt` are required; a snapshot that cannot supply
+    /// them is corrupt. The retired GitHub payload is optional so an old or
+    /// partial file still yields the Gmail state.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.gmailItems = try container.decode([TriageItem].self, forKey: .gmailItems)
+        self.savedAt = try container.decode(Date.self, forKey: .savedAt)
+        self.gitHubItems = (try? container.decode([TriageItem].self, forKey: .gitHubItems)) ?? []
+        self.dismissedGitHubKeys = try? container.decodeIfPresent([String].self, forKey: .dismissedGitHubKeys)
+    }
+
+    /// Reads and decodes a snapshot from `url`.
+    public static func load(from url: URL) throws -> SnapshotData {
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode(SnapshotData.self, from: data)
+    }
 }
 
 /// Central in-memory state store for the triage interface.
+///
+/// After the Open Work split this store owns Gmail only. `TriageSource.gitHub`
+/// remains so the views can route on `activeWorkspace`, but every GitHub read
+/// returns an empty fallback.
 @Observable
 @MainActor
 public final class TriageStore {
@@ -61,20 +68,10 @@ public final class TriageStore {
         }
     }
 
-    public var gitHubItems: [TriageItem] = [] {
-        didSet {
-            if gitHubItems.count > 500 {
-                gitHubItems = Array(gitHubItems.prefix(500))
-            }
-        }
-    }
-
     public var selectedItemId: String? = nil
     public var activeWorkspace: TriageSource = .gmail
-    public var gitHubFilter: GitHubFilter = .all
     public var toastMessage: String? = nil
     public var isToastVisible: Bool = false
-    public var isLoading: Bool = false
 
     // MARK: - Injected Services
 
@@ -85,63 +82,24 @@ public final class TriageStore {
     // MARK: - Private State
 
     private var toastDismissTask: Task<Void, Never>?
-    /// Canonical keys of GitHub items dismissed locally (`e` / `#`). Backfilled
-    /// issues have no notification thread ID, so this tombstone keeps them from
-    /// reappearing on the next backfill.
-    private var dismissedGitHubKeys: Set<String> = []
-
-    /// IDs of issue-stream items the user dismissed locally. The search API has no
-    /// per-item dismissal, so this keeps them from reappearing on the next poll.
-    private var dismissedGitHubIssueIDs: Set<String> = []
-
-    private static let dismissedDefaultsKey = "dispatch.dismissedGitHubIssueIDs"
 
     // MARK: - Computed Properties
 
-    /// GitHub items filtered by the active smart filter.
-    public var filteredGitHubItems: [TriageItem] {
-        switch gitHubFilter {
-        case .all:
-            return gitHubItems
-        case .ciAlerts:
-            return gitHubItems.filter { item in
-                if item.tags.contains("ci_activity") { return true }
-                if case .gitHubPullRequest(_, _, _, _, let ciStatus) = item.kind {
-                    return ciStatus == .completedFailure || ciStatus == .queued || ciStatus == .inProgress
-                }
-                return false
-            }
-        case .mentions:
-            return gitHubItems.filter { item in
-                item.tags.contains("mention") || item.tags.contains("team_mention")
-            }
-        case .reviewRequests:
-            return gitHubItems.filter { item in
-                if item.tags.contains("review_requested") || item.tags.contains("review_request") { return true }
-                if case .gitHubPullRequest(_, _, _, let reviewStatus, _) = item.kind {
-                    return reviewStatus == .pending || reviewStatus == .changesRequested
-                }
-                return false
-            }
-        }
-    }
-
-    /// Items visible under the current workspace and filter settings.
+    /// Items visible under the current workspace. GitHub work lives in
+    /// `OpenWorkStore`; this store has no GitHub items.
     public var activeItems: [TriageItem] {
         switch activeWorkspace {
         case .gmail:
             return gmailItems
         case .gitHub:
-            return filteredGitHubItems
+            return []
         }
     }
 
-    /// The currently selected item object.
+    /// The currently selected item object. Selection is Gmail-only.
     public var selectedItem: TriageItem? {
         guard let selectedItemId else { return nil }
-        return activeItems.first { $0.id == selectedItemId }
-            ?? gmailItems.first { $0.id == selectedItemId }
-            ?? gitHubItems.first { $0.id == selectedItemId }
+        return gmailItems.first { $0.id == selectedItemId }
     }
 
     // MARK: - Initialization
@@ -154,21 +112,6 @@ public final class TriageStore {
         self.gmailService = gmailService
         self.githubService = githubService
         self.authService = authService
-        self.dismissedGitHubIssueIDs = Set(
-            UserDefaults.standard.stringArray(forKey: Self.dismissedDefaultsKey) ?? []
-        )
-    }
-
-    /// Records a locally dismissed issue-stream item and persists the set.
-    private func dismissLocally(_ item: TriageItem) {
-        guard item.source == .gitHub else { return }
-        if case .gitHubNotification = item.kind { return }
-
-        dismissedGitHubIssueIDs.insert(item.id)
-        UserDefaults.standard.set(
-            Array(dismissedGitHubIssueIDs.suffix(1000)),
-            forKey: Self.dismissedDefaultsKey
-        )
     }
 
     // MARK: - Unread Counts
@@ -178,7 +121,7 @@ public final class TriageStore {
         case .gmail:
             return gmailItems.filter { $0.isUnread }.count
         case .gitHub:
-            return gitHubItems.filter { $0.isUnread }.count
+            return 0
         }
     }
 
@@ -189,86 +132,14 @@ public final class TriageStore {
         case .gmail:
             self.gmailItems = Array(items.prefix(500))
         case .gitHub:
-            // Live notifications replace the previous notification set, while
-            // backfilled open work is retained until the next backfill refresh.
-            // Issue-stream items carry no server-side dismiss state, so locally
-            // dismissed ones are filtered out so they do not reappear each poll.
-            let retainedBackfill = gitHubItems.filter { $0.isBackfillDerived }
-            let merged = mergedGitHubItems(notifications: items, backfill: retainedBackfill)
-            self.gitHubItems = Array(
-                merged
-                    .filter { !dismissedGitHubIssueIDs.contains($0.id) }
-                    .prefix(500)
-            )
+            // Open Work owns GitHub state; this store accepts Gmail only.
+            return
         }
 
         // Maintain selection validity
         if selectedItemId == nil || !activeItems.contains(where: { $0.id == selectedItemId }) {
             selectedItemId = activeItems.first?.id
         }
-    }
-
-    /// Merges backfilled open issues and pull requests with the live notification feed.
-    ///
-    /// Items are deduplicated by `canonicalKey`, so an unread notification for
-    /// issue #42 supersedes the backfilled copy of the same issue instead of
-    /// showing twice. Star, archived, and local unread state survive the merge.
-    public func setGitHubBackfill(_ items: [TriageItem]) {
-        // Tombstones only matter while the corresponding open item is still in
-        // the feed; pruning here keeps the set bounded.
-        dismissedGitHubKeys.formIntersection(Set(items.map(\.canonicalKey)))
-
-        let notifications = gitHubItems.filter { !$0.isBackfillDerived }
-        self.gitHubItems = Array(
-            mergedGitHubItems(notifications: notifications, backfill: items).prefix(500)
-        )
-
-        if selectedItemId == nil || !activeItems.contains(where: { $0.id == selectedItemId }) {
-            selectedItemId = activeItems.first?.id
-        }
-    }
-
-    private func mergedGitHubItems(
-        notifications: [TriageItem],
-        backfill: [TriageItem]
-    ) -> [TriageItem] {
-        let existingByID = gitHubItems.reduce(into: [String: TriageItem]()) { partial, item in
-            if partial[item.id] == nil {
-                partial[item.id] = item
-            }
-        }
-        let existingByKey = gitHubItems.reduce(into: [String: TriageItem]()) { partial, item in
-            if partial[item.canonicalKey] == nil {
-                partial[item.canonicalKey] = item
-            }
-        }
-
-        let notificationKeys = Set(notifications.map(\.canonicalKey))
-        var seenIDs = Set<String>()
-        var merged: [TriageItem] = []
-
-        for var item in notifications + backfill {
-            let key = item.canonicalKey
-            guard !dismissedGitHubKeys.contains(key) else { continue }
-
-            // A live notification always wins over the backfilled copy.
-            if item.isBackfillDerived, notificationKeys.contains(key) { continue }
-
-            guard seenIDs.insert(item.id).inserted else { continue }
-
-            if let existing = existingByID[item.id] ?? existingByKey[key] {
-                item.isStarred = existing.isStarred
-                item.isArchived = existing.isArchived
-                // Backfilled items always arrive read; keep a local "mark unread".
-                if item.isBackfillDerived {
-                    item.isUnread = existing.isUnread
-                }
-            }
-
-            merged.append(item)
-        }
-
-        return merged
     }
 
     // MARK: - Keyboard Selection Navigation
@@ -300,6 +171,11 @@ public final class TriageStore {
     // MARK: - Snapshot Persistence
 
     private var snapshotURL: URL {
+        Self.defaultSnapshotURL
+    }
+
+    /// The on-disk snapshot location shared by the store and the legacy migration.
+    public nonisolated static var defaultSnapshotURL: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         let dir = appSupport.appendingPathComponent("Dispatch", isDirectory: true)
@@ -311,16 +187,35 @@ public final class TriageStore {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
 
         do {
-            let data = try Data(contentsOf: url)
-            let decoder = JSONDecoder()
-            let snapshot = try decoder.decode(SnapshotData.self, from: data)
+            let snapshot = try SnapshotData.load(from: url)
             self.gmailItems = Array(snapshot.gmailItems.prefix(500))
-            self.gitHubItems = Array(snapshot.gitHubItems.prefix(500))
-            self.dismissedGitHubKeys = Set(snapshot.dismissedGitHubKeys ?? [])
 
             if selectedItemId == nil {
-                selectedItemId = activeItems.first?.id
+                selectedItemId = gmailItems.first?.id
             }
+        } catch {
+            // Quarantine the unreadable file once so the next save can proceed.
+            quarantineCorruptSnapshot(at: url, error: error)
+            self.gmailItems = []
+            self.selectedItemId = nil
+        }
+    }
+
+    /// Moves an unreadable snapshot aside as `snapshot.corrupt-<ISO8601>.json`.
+    ///
+    /// A rename failure is logged and leaves the file in place; either way the
+    /// store starts with empty Gmail state and does not suppress later saves.
+    private func quarantineCorruptSnapshot(at url: URL, error: Error) {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let stamp = formatter.string(from: Date())
+        let quarantineURL = url
+            .deletingLastPathComponent()
+            .appendingPathComponent("snapshot.corrupt-\(stamp).json")
+
+        do {
+            try FileManager.default.moveItem(at: url, to: quarantineURL)
+            print("[Dispatch] Snapshot decode failed; moved to \(quarantineURL.lastPathComponent): \(error)")
         } catch {
             print("[Dispatch] Failed to load snapshot: \(error)")
         }
@@ -329,9 +224,9 @@ public final class TriageStore {
     public func saveSnapshotSync() {
         let snapshot = SnapshotData(
             gmailItems: Array(gmailItems.prefix(500)),
-            gitHubItems: Array(gitHubItems.prefix(500)),
+            gitHubItems: [],
             savedAt: Date(),
-            dismissedGitHubKeys: Array(dismissedGitHubKeys)
+            dismissedGitHubKeys: nil
         )
 
         do {
@@ -354,25 +249,11 @@ public final class TriageStore {
     // MARK: - Optimistic Actions
 
     public func archive(item: TriageItem) {
-        if item.isBackfillDerived {
-            dismissBackfillItemLocally(item)
-            return
-        }
+        guard item.source == .gmail else { return }
 
-        let originalIndex: Int?
-        let originalSource = item.source
-
-        if originalSource == .gmail {
-            originalIndex = gmailItems.firstIndex(where: { $0.id == item.id })
-            if let idx = originalIndex {
-                gmailItems.remove(at: idx)
-            }
-        } else {
-            originalIndex = gitHubItems.firstIndex(where: { $0.id == item.id })
-            if let idx = originalIndex {
-                gitHubItems.remove(at: idx)
-            }
-            dismissLocally(item)
+        let originalIndex = gmailItems.firstIndex(where: { $0.id == item.id })
+        if let idx = originalIndex {
+            gmailItems.remove(at: idx)
         }
 
         // Adjust selection
@@ -383,55 +264,25 @@ public final class TriageStore {
         Task { [weak self] in
             guard let self else { return }
             do {
-                if originalSource == .gmail {
-                    guard let gmailService = self.gmailService else {
-                        throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "Gmail service not configured"])
-                    }
-                    try await gmailService.archiveThread(threadId: item.id)
-                } else {
-                    // Search-derived issues have no notification thread; dismissing
-                    // them is a local, snapshot-persisted action only.
-                    if case .gitHubNotification(let threadId, _) = item.kind {
-                        guard let githubService = self.githubService else {
-                            throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "GitHub service not configured"])
-                        }
-                        try await githubService.dismissNotification(threadId: threadId)
-                    }
+                guard let gmailService = self.gmailService else {
+                    throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "Gmail service not configured"])
                 }
+                try await gmailService.archiveThread(threadId: item.id)
             } catch {
                 // Rollback on network failure
-                if originalSource == .gmail {
-                    let insertAt = min(originalIndex ?? 0, self.gmailItems.count)
-                    self.gmailItems.insert(item, at: insertAt)
-                } else {
-                    let insertAt = min(originalIndex ?? 0, self.gitHubItems.count)
-                    self.gitHubItems.insert(item, at: insertAt)
-                }
+                let insertAt = min(originalIndex ?? 0, self.gmailItems.count)
+                self.gmailItems.insert(item, at: insertAt)
                 self.showToast("Failed to archive: \(error.localizedDescription)")
             }
         }
     }
 
     public func trash(item: TriageItem) {
-        if item.isBackfillDerived {
-            dismissBackfillItemLocally(item)
-            return
-        }
+        guard item.source == .gmail else { return }
 
-        let originalIndex: Int?
-        let originalSource = item.source
-
-        if originalSource == .gmail {
-            originalIndex = gmailItems.firstIndex(where: { $0.id == item.id })
-            if let idx = originalIndex {
-                gmailItems.remove(at: idx)
-            }
-        } else {
-            originalIndex = gitHubItems.firstIndex(where: { $0.id == item.id })
-            if let idx = originalIndex {
-                gitHubItems.remove(at: idx)
-            }
-            dismissLocally(item)
+        let originalIndex = gmailItems.firstIndex(where: { $0.id == item.id })
+        if let idx = originalIndex {
+            gmailItems.remove(at: idx)
         }
 
         if selectedItemId == item.id {
@@ -441,40 +292,24 @@ public final class TriageStore {
         Task { [weak self] in
             guard let self else { return }
             do {
-                if originalSource == .gmail {
-                    guard let gmailService = self.gmailService else {
-                        throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "Gmail service not configured"])
-                    }
-                    try await gmailService.trashThread(threadId: item.id)
-                } else {
-                    // Only notification threads can be unsubscribed upstream; search-derived
-                    // issues are removed locally and restored on the next sync if still open.
-                    if case .gitHubNotification(let threadId, _) = item.kind {
-                        guard let githubService = self.githubService else {
-                            throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "GitHub service not configured"])
-                        }
-                        try await githubService.unsubscribeNotification(threadId: threadId)
-                    }
+                guard let gmailService = self.gmailService else {
+                    throw NSError(domain: "Dispatch", code: -1, userInfo: [NSLocalizedDescriptionKey: "Gmail service not configured"])
                 }
+                try await gmailService.trashThread(threadId: item.id)
             } catch {
                 // Rollback on failure
-                if originalSource == .gmail {
-                    let insertAt = min(originalIndex ?? 0, self.gmailItems.count)
-                    self.gmailItems.insert(item, at: insertAt)
-                } else {
-                    let insertAt = min(originalIndex ?? 0, self.gitHubItems.count)
-                    self.gitHubItems.insert(item, at: insertAt)
-                }
+                let insertAt = min(originalIndex ?? 0, self.gmailItems.count)
+                self.gmailItems.insert(item, at: insertAt)
                 self.showToast("Failed to move to trash: \(error.localizedDescription)")
             }
         }
     }
 
     public func star(item: TriageItem) {
+        guard item.source == .gmail else { return }
+
         let newStarred = !item.isStarred
         mutateItem(id: item.id) { $0.isStarred = newStarred }
-
-        guard item.source == .gmail else { return }
 
         Task { [weak self] in
             guard let self else { return }
@@ -490,31 +325,15 @@ public final class TriageStore {
     }
 
     public func markUnread(item: TriageItem) {
+        guard item.source == .gmail else { return }
+
         let newUnread = !item.isUnread
         mutateItem(id: item.id) { $0.isUnread = newUnread }
-    }
-
-    /// Hides a backfilled open issue/PR locally without mutating public repository
-    /// state. The canonical key is tombstoned so the next backfill does not
-    /// resurrect it.
-    private func dismissBackfillItemLocally(_ item: TriageItem) {
-        dismissedGitHubKeys.insert(item.canonicalKey)
-
-        if let index = gitHubItems.firstIndex(where: { $0.id == item.id }) {
-            gitHubItems.remove(at: index)
-        }
-
-        if selectedItemId == item.id {
-            selectedItemId = activeItems.first?.id
-        }
     }
 
     private func mutateItem(id: String, mutator: (inout TriageItem) -> Void) {
         if let idx = gmailItems.firstIndex(where: { $0.id == id }) {
             mutator(&gmailItems[idx])
-        }
-        if let idx = gitHubItems.firstIndex(where: { $0.id == id }) {
-            mutator(&gitHubItems[idx])
         }
     }
 

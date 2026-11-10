@@ -98,14 +98,10 @@ struct SyncCoordinatorTests {
         return URLSession(configuration: configuration)
     }
 
-    private func makeServices(session: URLSession) -> (GmailService, GitHubService) {
-        let gmail = GmailService(session: session) {
+    private func makeGmailService(session: URLSession) -> GmailService {
+        GmailService(session: session) {
             "mock-gmail-token"
         }
-        let github = GitHubService(session: session) {
-            "mock-github-token"
-        }
-        return (gmail, github)
     }
 
     // MARK: - JSON Fixture Helpers
@@ -157,34 +153,13 @@ struct SyncCoordinatorTests {
         """
     }
 
-    private func gitHubSearchIssuesJSON(issues: [(id: String, title: String, number: Int)]) -> String {
-        let entries = issues.map { issue in
-            """
-            {
-                "id": 1,
-                "number": \(issue.number),
-                "title": "\(issue.title)",
-                "state": "open",
-                "updated_at": "2024-01-01T12:00:00Z",
-                "html_url": "https://github.com/owner/repo/issues/\(issue.number)",
-                "user": {
-                    "login": "owner",
-                    "avatar_url": "https://avatars.githubusercontent.com/u/1"
-                },
-                "repository_url": "https://api.github.com/repos/owner/repo"
-            }
-            """
-        }
-        return "{\"total_count\": \(issues.count), \"items\": [\(entries.joined(separator: ", "))]}"
-    }
-
     // MARK: - Tests
 
-    @Test("Cold bootstrap sync sets initial historyId and ETag")
+    @Test("Cold bootstrap sync sets initial historyId")
     func testColdBootstrapSync() async throws {
         MockURLProtocol.reset()
         let session = makeMockSession()
-        let (gmail, github) = makeServices(session: session)
+        let gmail = makeGmailService(session: session)
 
         // Mock Gmail endpoints
         MockURLProtocol.register { request in
@@ -205,23 +180,7 @@ struct SyncCoordinatorTests {
             return nil
         }
 
-        // Mock GitHub assigned-issues search endpoint
-        MockURLProtocol.register { request in
-            guard let url = request.url?.absoluteString, url.contains("api.github.com/search/issues") else { return nil }
-            let resp = HTTPURLResponse(
-                url: request.url!,
-                statusCode: 200,
-                httpVersion: "HTTP/1.1",
-                headerFields: [
-                    "Content-Type": "application/json",
-                    "ETag": "W/\"gh-initial-etag\""
-                ]
-            )!
-            let json = gitHubSearchIssuesJSON(issues: [("notif-1", "Assigned Issue", 101)])
-            return (resp, Data(json.utf8))
-        }
-
-        let coordinator = SyncCoordinator(gmailService: gmail, gitHubService: github)
+        let coordinator = SyncCoordinator(gmailService: gmail, refreshOpenWork: {})
         let collector = UpdateCollector()
 
         await coordinator.setOnItemsUpdated { items, source in
@@ -241,21 +200,18 @@ struct SyncCoordinatorTests {
         let status = await coordinator.getStatus()
         #expect(status.isRunning == true)
         #expect(status.lastGmailHistoryId == "1000")
-        #expect(status.lastGitHubETag == "W/\"gh-initial-etag\"")
 
         // Wait briefly for asynchronous update emissions
         try await Task.sleep(nanoseconds: 50_000_000)
         let gmailCount = await collector.count(for: .gmail)
-        let ghCount = await collector.count(for: .gitHub)
         #expect(gmailCount >= 1)
-        #expect(ghCount >= 1)
     }
 
     @Test("Incremental polling delta logic updates historyId and reconciles added threads")
     func testIncrementalPollingDeltaLogic() async throws {
         MockURLProtocol.reset()
         let session = makeMockSession()
-        let (gmail, github) = makeServices(session: session)
+        let gmail = makeGmailService(session: session)
 
         // Step 1: Bootstrap setup
         MockURLProtocol.register { request in
@@ -273,19 +229,10 @@ struct SyncCoordinatorTests {
                 let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
                 return (resp, Data(threadMetadataJSON(id: "thread-1", historyId: "1000").utf8))
             }
-            if url.contains("api.github.com/search/issues") {
-                let resp = HTTPURLResponse(
-                    url: request.url!,
-                    statusCode: 304,
-                    httpVersion: "HTTP/1.1",
-                    headerFields: [:]
-                )!
-                return (resp, Data())
-            }
             return nil
         }
 
-        let coordinator = SyncCoordinator(gmailService: gmail, gitHubService: github)
+        let coordinator = SyncCoordinator(gmailService: gmail, refreshOpenWork: {})
         let collector = UpdateCollector()
 
         await coordinator.setOnItemsUpdated { items, source in
@@ -356,11 +303,6 @@ struct SyncCoordinatorTests {
                 return (resp, Data(profileJSON(historyId: "1050").utf8))
             }
 
-            if url.contains("api.github.com/search/issues") {
-                let resp = HTTPURLResponse(url: request.url!, statusCode: 304, httpVersion: "HTTP/1.1", headerFields: [:])!
-                return (resp, Data())
-            }
-
             return nil
         }
 
@@ -381,7 +323,7 @@ struct SyncCoordinatorTests {
     func testInvalidHistoryId404Recovery() async throws {
         MockURLProtocol.reset()
         let session = makeMockSession()
-        let (gmail, github) = makeServices(session: session)
+        let gmail = makeGmailService(session: session)
 
         // Bootstrap with history ID "999"
         MockURLProtocol.register { request in
@@ -399,14 +341,10 @@ struct SyncCoordinatorTests {
                 let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
                 return (resp, Data(threadMetadataJSON(id: "thread-stale", historyId: "999").utf8))
             }
-            if url.contains("api.github.com/search/issues") {
-                let resp = HTTPURLResponse(url: request.url!, statusCode: 304, httpVersion: "HTTP/1.1", headerFields: [:])!
-                return (resp, Data())
-            }
             return nil
         }
 
-        let coordinator = SyncCoordinator(gmailService: gmail, gitHubService: github)
+        let coordinator = SyncCoordinator(gmailService: gmail, refreshOpenWork: {})
         let collector = UpdateCollector()
 
         await coordinator.setOnItemsUpdated { items, source in
@@ -460,11 +398,6 @@ struct SyncCoordinatorTests {
                 return (resp, Data(profileJSON(historyId: "2000").utf8))
             }
 
-            if url.contains("api.github.com/search/issues") {
-                let resp = HTTPURLResponse(url: request.url!, statusCode: 304, httpVersion: "HTTP/1.1", headerFields: [:])!
-                return (resp, Data())
-            }
-
             return nil
         }
 
@@ -483,191 +416,12 @@ struct SyncCoordinatorTests {
         #expect(items?.first?.title == "Recovered Thread")
     }
 
-    @Test("GitHub ETag 304 Not Modified caching retains ETag and consumes zero updates")
-    func testGitHubETag304NotModifiedCaching() async throws {
-        MockURLProtocol.reset()
-        let session = makeMockSession()
-        let (gmail, github) = makeServices(session: session)
-
-        let initialETag = "W/\"etag-gh-release-12345\""
-
-        // Step 1: Initial GitHub poll returns HTTP 200 with an ETag header
-        MockURLProtocol.register { request in
-            guard let url = request.url?.absoluteString else { return nil }
-
-            if url.contains("api.github.com/search/issues") {
-                let resp = HTTPURLResponse(
-                    url: request.url!,
-                    statusCode: 200,
-                    httpVersion: "HTTP/1.1",
-                    headerFields: [
-                        "Content-Type": "application/json",
-                        "ETag": initialETag
-                    ]
-                )!
-                let json = gitHubSearchIssuesJSON(issues: [("gh-notif-1", "CI check failure", 42)])
-                return (resp, Data(json.utf8))
-            }
-
-            if url.contains("/profile") {
-                let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
-                return (resp, Data(profileJSON(historyId: "100").utf8))
-            }
-            if url.contains("/threads") {
-                let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
-                return (resp, Data(threadListJSON(threadIds: []).utf8))
-            }
-
-            return nil
-        }
-
-        let coordinator = SyncCoordinator(gmailService: gmail, gitHubService: github)
-        let collector = UpdateCollector()
-
-        await coordinator.setOnItemsUpdated { items, source in
-            Task {
-                await collector.append(items: items, source: source)
-            }
-        }
-
-        await coordinator.start()
-        defer {
-            Task {
-                await coordinator.stop()
-            }
-        }
-
-        // Verify initial ETag cached
-        #expect(await coordinator.lastGitHubETag == initialETag)
-
-        // Step 2: Next poll sends If-None-Match with last ETag, server responds with HTTP 304
-        MockURLProtocol.reset()
-        nonisolated(unsafe) var receivedIfNoneMatch: String? = nil
-
-        MockURLProtocol.register { request in
-            guard let url = request.url?.absoluteString else { return nil }
-
-            if url.contains("api.github.com/search/issues") {
-                receivedIfNoneMatch = request.value(forHTTPHeaderField: "If-None-Match")
-                let resp = HTTPURLResponse(
-                    url: request.url!,
-                    statusCode: 304,
-                    httpVersion: "HTTP/1.1",
-                    headerFields: [:]
-                )!
-                return (resp, Data())
-            }
-
-            if url.contains("/history?") {
-                let historyJSON = "{\"history\": [], \"historyId\": \"100\"}"
-                let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
-                return (resp, Data(historyJSON.utf8))
-            }
-
-            return nil
-        }
-
-        await collector.reset()
-        await coordinator.performSyncCycle()
-
-        // Verify request included If-None-Match
-        #expect(receivedIfNoneMatch == initialETag)
-
-        // Verify cached ETag was preserved
-        #expect(await coordinator.lastGitHubETag == initialETag)
-
-        // Verify NO github items were emitted on 304
-        try await Task.sleep(nanoseconds: 50_000_000)
-        let githubUpdates = await collector.count(for: .gitHub)
-        #expect(githubUpdates == 0)
-    }
-
-    @Test("GitHub ETag updates when server returns 200 with new content and new ETag")
-    func testGitHubETagUpdatesOnNewContent() async throws {
-        MockURLProtocol.reset()
-        let session = makeMockSession()
-        let (gmail, github) = makeServices(session: session)
-
-        // Initial 200 with etag-1
-        MockURLProtocol.register { request in
-            guard let url = request.url?.absoluteString else { return nil }
-
-            if url.contains("api.github.com/search/issues") {
-                let resp = HTTPURLResponse(
-                    url: request.url!,
-                    statusCode: 200,
-                    httpVersion: "HTTP/1.1",
-                    headerFields: ["Content-Type": "application/json", "ETag": "W/\"etag-v1\""]
-                )!
-                return (resp, Data(gitHubSearchIssuesJSON(issues: [("notif-1", "First Notif", 1)]).utf8))
-            }
-            if url.contains("/profile") {
-                let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
-                return (resp, Data(profileJSON(historyId: "100").utf8))
-            }
-            if url.contains("/threads") {
-                let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
-                return (resp, Data(threadListJSON(threadIds: []).utf8))
-            }
-            return nil
-        }
-
-        let coordinator = SyncCoordinator(gmailService: gmail, gitHubService: github)
-        let collector = UpdateCollector()
-
-        await coordinator.setOnItemsUpdated { items, source in
-            Task {
-                await collector.append(items: items, source: source)
-            }
-        }
-
-        await coordinator.start()
-        defer {
-            Task {
-                await coordinator.stop()
-            }
-        }
-
-        #expect(await coordinator.lastGitHubETag == "W/\"etag-v1\"")
-
-        // Next poll returns 200 with etag-2 and updated notification
-        MockURLProtocol.reset()
-        MockURLProtocol.register { request in
-            guard let url = request.url?.absoluteString else { return nil }
-
-            if url.contains("api.github.com/search/issues") {
-                let resp = HTTPURLResponse(
-                    url: request.url!,
-                    statusCode: 200,
-                    httpVersion: "HTTP/1.1",
-                    headerFields: ["Content-Type": "application/json", "ETag": "W/\"etag-v2\""]
-                )!
-                return (resp, Data(gitHubSearchIssuesJSON(issues: [("notif-2", "Second Notif", 2)]).utf8))
-            }
-            if url.contains("/history?") {
-                let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
-                return (resp, Data("{\"history\": [], \"historyId\": \"100\"}".utf8))
-            }
-            return nil
-        }
-
-        await collector.reset()
-        await coordinator.performSyncCycle()
-
-        #expect(await coordinator.lastGitHubETag == "W/\"etag-v2\"")
-
-        try await Task.sleep(nanoseconds: 50_000_000)
-        let updatedItems = await collector.lastItems(for: .gitHub)
-        #expect(updatedItems?.count == 1)
-        #expect(updatedItems?.first?.id == "owner/repo#2")
-    }
-
     @Test("System sleep and wake transitions manage polling state properly")
     func testSystemSleepAndWake() async throws {
         let session = makeMockSession()
-        let (gmail, github) = makeServices(session: session)
+        let gmail = makeGmailService(session: session)
 
-        let coordinator = SyncCoordinator(gmailService: gmail, gitHubService: github)
+        let coordinator = SyncCoordinator(gmailService: gmail, refreshOpenWork: {})
         await coordinator.start()
         defer {
             Task {
@@ -691,9 +445,9 @@ struct SyncCoordinatorTests {
     @Test("Network availability changes suspend and resume sync operations")
     func testNetworkStatusTransitions() async throws {
         let session = makeMockSession()
-        let (gmail, github) = makeServices(session: session)
+        let gmail = makeGmailService(session: session)
 
-        let coordinator = SyncCoordinator(gmailService: gmail, gitHubService: github)
+        let coordinator = SyncCoordinator(gmailService: gmail, refreshOpenWork: {})
         await coordinator.start()
         defer {
             Task {
