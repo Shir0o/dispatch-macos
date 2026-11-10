@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import DispatchApp
 
-@Suite("TriageStore Tests")
+@Suite("TriageStore Tests", .serialized)
 @MainActor
 struct TriageStoreTests {
 
@@ -10,19 +10,13 @@ struct TriageStoreTests {
 
     private func makeTestItem(
         id: String,
-        source: TriageSource,
         title: String = "Test Item",
         isUnread: Bool = true,
-        tags: [String] = [],
-        kind overrideKind: TriageKind? = nil
+        tags: [String] = []
     ) -> TriageItem {
-        let kind: TriageKind = overrideKind ?? (source == .gmail
-            ? .email(threadId: id, snippet: "Snippet for \(id)", hasHtml: false)
-            : .gitHubIssue(number: 1, repo: "owner/repo", state: "open", isAssignedToMe: true))
-
-        return TriageItem(
+        TriageItem(
             id: id,
-            source: source,
+            source: .gmail,
             title: title,
             authorName: "Author \(id)",
             authorAvatarURL: nil,
@@ -31,16 +25,13 @@ struct TriageStoreTests {
             isStarred: false,
             isArchived: false,
             tags: tags,
-            kind: kind,
+            kind: .email(threadId: id, snippet: "Snippet for \(id)", hasHtml: false),
             webURL: URL(string: "https://example.com/\(id)")!
         )
     }
 
     private func getSnapshotURL() -> URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        let dir = appSupport.appendingPathComponent("Dispatch", isDirectory: true)
-        return dir.appendingPathComponent("snapshot.json")
+        TriageStore.defaultSnapshotURL
     }
 
     private func makeMockSession() -> URLSession {
@@ -49,13 +40,45 @@ struct TriageStoreTests {
         return URLSession(configuration: configuration)
     }
 
+    /// Backs up the snapshot file for the duration of a test and restores it.
+    private func withSnapshotBackup(_ body: () throws -> Void) rethrows {
+        let snapshotURL = getSnapshotURL()
+        let backupData = try? Data(contentsOf: snapshotURL)
+        defer {
+            if let backupData {
+                try? backupData.write(to: snapshotURL, options: .atomic)
+            } else {
+                try? FileManager.default.removeItem(at: snapshotURL)
+            }
+        }
+        try body()
+    }
+
+    private func writeRawSnapshot(_ object: [String: Any], to url: URL) throws {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted])
+        try writeData(data, to: url)
+    }
+
+    private func writeData(_ data: Data, to url: URL) throws {
+        let dir = url.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        try data.write(to: url, options: .atomic)
+    }
+
+    private func directoryContents() -> Set<String> {
+        let dir = getSnapshotURL().deletingLastPathComponent()
+        return Set((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+    }
+
     // MARK: - 500-Item Prefix Capping Tests
 
     @Test("Direct assignment to gmailItems caps at 500 elements")
     func testGmailItemsDirectAssignmentCapping() {
         let store = TriageStore()
         let items = (0..<600).map { i in
-            makeTestItem(id: "gmail-\(i)", source: .gmail, title: "Email \(i)")
+            makeTestItem(id: "gmail-\(i)", title: "Email \(i)")
         }
 
         store.gmailItems = items
@@ -65,25 +88,11 @@ struct TriageStoreTests {
         #expect(store.gmailItems.last?.id == "gmail-499")
     }
 
-    @Test("Direct assignment to gitHubItems caps at 500 elements")
-    func testGitHubItemsDirectAssignmentCapping() {
-        let store = TriageStore()
-        let items = (0..<600).map { i in
-            makeTestItem(id: "github-\(i)", source: .gitHub, title: "Issue \(i)")
-        }
-
-        store.gitHubItems = items
-
-        #expect(store.gitHubItems.count == 500)
-        #expect(store.gitHubItems.first?.id == "github-0")
-        #expect(store.gitHubItems.last?.id == "github-499")
-    }
-
     @Test("setItems caps Gmail items at 500 elements and preserves item ordering")
     func testSetItemsGmailCapping() {
         let store = TriageStore()
         let items = (0..<750).map { i in
-            makeTestItem(id: "gmail-bulk-\(i)", source: .gmail, title: "Thread \(i)")
+            makeTestItem(id: "gmail-bulk-\(i)", title: "Thread \(i)")
         }
 
         store.setItems(items, for: .gmail)
@@ -94,31 +103,55 @@ struct TriageStoreTests {
         #expect(store.selectedItemId == "gmail-bulk-0")
     }
 
-    @Test("setItems caps GitHub items at 500 elements")
-    func testSetItemsGitHubCapping() {
-        let store = TriageStore()
-        let items = (0..<550).map { i in
-            makeTestItem(id: "github-bulk-\(i)", source: .gitHub, title: "PR \(i)")
-        }
-
-        store.setItems(items, for: .gitHub)
-
-        #expect(store.gitHubItems.count == 500)
-        #expect(store.gitHubItems[0].id == "github-bulk-0")
-        #expect(store.gitHubItems[499].id == "github-bulk-499")
-    }
-
     @Test("Items below 500 are fully preserved without capping")
     func testItemsBelow500Preserved() {
         let store = TriageStore()
         let count = 42
         let items = (0..<count).map { i in
-            makeTestItem(id: "item-\(i)", source: .gmail, title: "Item \(i)")
+            makeTestItem(id: "item-\(i)", title: "Item \(i)")
         }
 
         store.gmailItems = items
         #expect(store.gmailItems.count == count)
         #expect(store.unreadCount(for: .gmail) == count)
+    }
+
+    // MARK: - GitHub Fallbacks
+
+    @Test("The GitHub workspace has no items and no unread count; selection stays Gmail-only")
+    func testGitHubWorkspaceFallbacks() {
+        let store = TriageStore()
+        let item = makeTestItem(id: "gmail-1", title: "Only Gmail")
+        store.setItems([item], for: .gmail)
+        #expect(store.selectedItemId == "gmail-1")
+
+        store.activeWorkspace = .gitHub
+
+        #expect(store.activeItems.isEmpty)
+        #expect(store.unreadCount(for: .gitHub) == 0)
+        // There is no GitHub fallback: the selection still resolves to the Gmail item.
+        #expect(store.selectedItem?.id == "gmail-1")
+
+        store.activeWorkspace = .gmail
+        #expect(store.activeItems.map(\.id) == ["gmail-1"])
+        #expect(store.selectedItem?.id == "gmail-1")
+
+        // A stale selection id resolves to nothing rather than a GitHub item.
+        store.selectedItemId = "gh-not-a-gmail-item"
+        #expect(store.selectedItem == nil)
+    }
+
+    @Test("setItems(.gitHub) is a no-op and does not disturb Gmail state")
+    func testSetItemsGitHubIsNoOp() {
+        let store = TriageStore()
+        let gmailItem = makeTestItem(id: "gmail-1")
+        store.setItems([gmailItem], for: .gmail)
+
+        let githubLike = makeTestItem(id: "gmail-2", title: "Decoy")
+        store.setItems([githubLike], for: .gitHub)
+
+        #expect(store.gmailItems.map(\.id) == ["gmail-1"])
+        #expect(store.selectedItemId == "gmail-1")
     }
 
     // MARK: - Optimistic Archive Deletion & Rollback Tests
@@ -127,9 +160,9 @@ struct TriageStoreTests {
     func testGmailArchiveOptimisticDeletionAndRollback() async throws {
         let store = TriageStore()
 
-        let item0 = makeTestItem(id: "g0", source: .gmail, title: "First")
-        let item1 = makeTestItem(id: "g1", source: .gmail, title: "Target to Archive")
-        let item2 = makeTestItem(id: "g2", source: .gmail, title: "Third")
+        let item0 = makeTestItem(id: "g0", title: "First")
+        let item1 = makeTestItem(id: "g1", title: "Target to Archive")
+        let item2 = makeTestItem(id: "g2", title: "Third")
         store.gmailItems = [item0, item1, item2]
 
         // Configure GmailService that simulates network failure
@@ -176,7 +209,7 @@ struct TriageStoreTests {
     @Test("Optimistic archive rolls back when GmailService is not configured")
     func testGmailArchiveRollbackWhenServiceNotConfigured() async throws {
         let store = TriageStore()
-        let item = makeTestItem(id: "g-alone", source: .gmail, title: "Alone")
+        let item = makeTestItem(id: "g-alone", title: "Alone")
         store.gmailItems = [item]
         store.gmailService = nil
 
@@ -196,117 +229,12 @@ struct TriageStoreTests {
         #expect(store.toastMessage?.contains("Gmail service not configured") == true)
     }
 
-    @Test("Optimistic archive immediately removes GitHub item and rolls back on failure")
-    func testGitHubArchiveOptimisticDeletionAndRollback() async throws {
-        let store = TriageStore()
-
-        let item0 = makeTestItem(id: "gh0", source: .gitHub, title: "First PR")
-        let item1 = makeTestItem(
-            id: "gh1",
-            source: .gitHub,
-            title: "Target Issue",
-            kind: .gitHubNotification(threadId: "gh1", reason: "assign")
-        )
-        let item2 = makeTestItem(id: "gh2", source: .gitHub, title: "Third PR")
-        store.gitHubItems = [item0, item1, item2]
-
-        // Mock GitHub failure
-        MockURLProtocol.reset()
-        MockURLProtocol.register { request in
-            guard let url = request.url?.absoluteString, url.contains("notifications/threads") else { return nil }
-            let resp = HTTPURLResponse(
-                url: request.url!,
-                statusCode: 503,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
-            )!
-            return (resp, Data("{\"message\": \"Service Unavailable\"}".utf8))
-        }
-
-        let session = makeMockSession()
-        let failingGithub = GitHubService(session: session) { "mock-token" }
-        store.githubService = failingGithub
-
-        // Optimistic removal
-        store.archive(item: item1)
-        #expect(store.gitHubItems.count == 2)
-        #expect(!store.gitHubItems.contains(where: { $0.id == "gh1" }))
-
-        // Wait for rollback
-        var rolledBack = false
-        for _ in 0..<50 {
-            if store.gitHubItems.contains(where: { $0.id == "gh1" }) {
-                rolledBack = true
-                break
-            }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-
-        #expect(rolledBack == true)
-        #expect(store.gitHubItems.count == 3)
-        #expect(store.gitHubItems[1].id == "gh1")
-        #expect(store.toastMessage?.contains("Failed to archive") == true)
-    }
-
-    @Test("Archiving a search-derived issue is local-only and never hits the network")
-    func testIssueArchiveIsLocalOnly() async throws {
-        let store = TriageStore()
-
-        let issue = makeTestItem(id: "owner/repo#7", source: .gitHub, title: "Assigned issue")
-        store.gitHubItems = [issue]
-
-        MockURLProtocol.reset()
-        nonisolated(unsafe) var networkCalls = 0
-        MockURLProtocol.register { request in
-            networkCalls += 1
-            let resp = HTTPURLResponse(
-                url: request.url!,
-                statusCode: 500,
-                httpVersion: "HTTP/1.1",
-                headerFields: [:]
-            )!
-            return (resp, Data())
-        }
-
-        store.githubService = GitHubService(session: makeMockSession()) { "mock-token" }
-
-        store.archive(item: issue)
-        #expect(store.gitHubItems.isEmpty)
-
-        // Give the (absent) network task time to run and potentially roll back.
-        try await Task.sleep(nanoseconds: 150_000_000)
-
-        #expect(store.gitHubItems.isEmpty)
-        #expect(networkCalls == 0)
-        #expect(store.toastMessage == nil)
-    }
-
-    @Test("A locally dismissed issue does not reappear on the next sync")
-    func testDismissedIssueDoesNotReappear() async {
-        defer {
-            UserDefaults.standard.removeObject(forKey: "dispatch.dismissedGitHubIssueIDs")
-        }
-
-        let store = TriageStore()
-        let issue = makeTestItem(id: "owner/repo#9", source: .gitHub, title: "Dismiss me")
-
-        store.setItems([issue], for: .gitHub)
-        #expect(store.gitHubItems.count == 1)
-
-        store.archive(item: issue)
-        #expect(store.gitHubItems.isEmpty)
-
-        // The next poll returns the same still-open issue from the search API.
-        store.setItems([issue], for: .gitHub)
-        #expect(store.gitHubItems.isEmpty)
-    }
-
     @Test("Successful archive keeps item removed and does not trigger rollback")
     func testSuccessfulArchiveMaintainsDeletion() async throws {
         let store = TriageStore()
 
-        let item0 = makeTestItem(id: "g0", source: .gmail, title: "Keep")
-        let item1 = makeTestItem(id: "g1", source: .gmail, title: "Archive Me")
+        let item0 = makeTestItem(id: "g0", title: "Keep")
+        let item1 = makeTestItem(id: "g1", title: "Archive Me")
         store.gmailItems = [item0, item1]
 
         MockURLProtocol.reset()
@@ -335,145 +263,233 @@ struct TriageStoreTests {
         #expect(store.toastMessage == nil)
     }
 
+    @Test("Trash is Gmail-only")
+    func testTrashIsGmailOnly() {
+        let store = TriageStore()
+        let gmailItem = makeTestItem(id: "g1")
+        store.gmailItems = [gmailItem]
+
+        // A Gmail-kind item from another source is a no-op: no removal, no toast.
+        let foreign = TriageItem(
+            id: "foreign-1",
+            source: .gitHub,
+            title: "Retired GitHub item",
+            authorName: "ghost",
+            timestamp: Date(timeIntervalSince1970: 1700000000),
+            kind: .email(threadId: "foreign-1", snippet: "", hasHtml: false),
+            webURL: URL(string: "https://example.com/foreign-1")!
+        )
+
+        store.trash(item: foreign)
+        store.archive(item: foreign)
+        store.markUnread(item: foreign)
+
+        #expect(store.gmailItems.map(\.id) == ["g1"])
+        #expect(store.toastMessage == nil)
+    }
+
     // MARK: - Snapshot Persistence Tests
 
     @Test("Synchronous atomic snapshot serialization and cold-start deserialization")
     func testSnapshotSaveAndLoad() throws {
-        let snapshotURL = getSnapshotURL()
-        let backupData = try? Data(contentsOf: snapshotURL)
-        defer {
-            if let backupData {
-                try? backupData.write(to: snapshotURL, options: .atomic)
-            } else {
-                try? FileManager.default.removeItem(at: snapshotURL)
-            }
+        try withSnapshotBackup {
+            let snapshotURL = getSnapshotURL()
+
+            let store = TriageStore()
+            let gmailItem = makeTestItem(
+                id: "gmail-snap-1",
+                title: "Architecture Discussion",
+                isUnread: true,
+                tags: ["INBOX", "IMPORTANT"]
+            )
+
+            store.gmailItems = [gmailItem]
+
+            // Save synchronously
+            store.saveSnapshotSync()
+
+            #expect(FileManager.default.fileExists(atPath: snapshotURL.path))
+
+            // Verify snapshot file decodes valid SnapshotData and writes no GitHub state.
+            let fileData = try Data(contentsOf: snapshotURL)
+            let decoded = try JSONDecoder().decode(SnapshotData.self, from: fileData)
+            #expect(decoded.gmailItems.count == 1)
+            #expect(decoded.gitHubItems.isEmpty)
+            #expect(decoded.dismissedGitHubKeys == nil)
+
+            // Cold-start with fresh store
+            let freshStore = TriageStore()
+            #expect(freshStore.gmailItems.isEmpty)
+
+            freshStore.loadSnapshot()
+
+            #expect(freshStore.gmailItems.count == 1)
+
+            let loadedGmail = freshStore.gmailItems.first
+            #expect(loadedGmail?.id == "gmail-snap-1")
+            #expect(loadedGmail?.title == "Architecture Discussion")
+            #expect(loadedGmail?.tags == ["INBOX", "IMPORTANT"])
+            #expect(loadedGmail?.isUnread == true)
+            #expect(freshStore.selectedItemId == "gmail-snap-1")
         }
-
-        let store = TriageStore()
-        let gmailItem = makeTestItem(
-            id: "gmail-snap-1",
-            source: .gmail,
-            title: "Architecture Discussion",
-            isUnread: true,
-            tags: ["INBOX", "IMPORTANT"]
-        )
-        let githubItem = TriageItem(
-            id: "gh-snap-1",
-            source: .gitHub,
-            title: "Fix Actor Isolation in SyncEngine",
-            authorName: "octocat",
-            authorAvatarURL: URL(string: "https://avatars.githubusercontent.com/u/1"),
-            timestamp: Date(timeIntervalSince1970: 1700000000),
-            isUnread: false,
-            isStarred: true,
-            isArchived: false,
-            tags: ["ci_activity", "review_requested"],
-            kind: .gitHubPullRequest(
-                number: 42,
-                repo: "org/repo",
-                isDraft: false,
-                reviewStatus: .changesRequested,
-                ciStatus: .completedFailure
-            ),
-            webURL: URL(string: "https://github.com/org/repo/pull/42")!
-        )
-
-        store.gmailItems = [gmailItem]
-        store.gitHubItems = [githubItem]
-
-        // Save synchronously
-        store.saveSnapshotSync()
-
-        #expect(FileManager.default.fileExists(atPath: snapshotURL.path))
-
-        // Verify snapshot file decodes valid SnapshotData
-        let fileData = try Data(contentsOf: snapshotURL)
-        let decoded = try JSONDecoder().decode(SnapshotData.self, from: fileData)
-        #expect(decoded.gmailItems.count == 1)
-        #expect(decoded.gitHubItems.count == 1)
-
-        // Cold-start with fresh store
-        let freshStore = TriageStore()
-        #expect(freshStore.gmailItems.isEmpty)
-        #expect(freshStore.gitHubItems.isEmpty)
-
-        freshStore.loadSnapshot()
-
-        #expect(freshStore.gmailItems.count == 1)
-        #expect(freshStore.gitHubItems.count == 1)
-
-        let loadedGmail = freshStore.gmailItems.first
-        #expect(loadedGmail?.id == "gmail-snap-1")
-        #expect(loadedGmail?.title == "Architecture Discussion")
-        #expect(loadedGmail?.tags == ["INBOX", "IMPORTANT"])
-        #expect(loadedGmail?.isUnread == true)
-
-        let loadedGitHub = freshStore.gitHubItems.first
-        #expect(loadedGitHub?.id == "gh-snap-1")
-        #expect(loadedGitHub?.title == "Fix Actor Isolation in SyncEngine")
-        #expect(loadedGitHub?.authorName == "octocat")
-        #expect(loadedGitHub?.isStarred == true)
-        #expect(loadedGitHub?.isUnread == false)
-
-        if case .gitHubPullRequest(let number, let repo, let isDraft, let reviewStatus, let ciStatus) = loadedGitHub?.kind {
-            #expect(number == 42)
-            #expect(repo == "org/repo")
-            #expect(isDraft == false)
-            #expect(reviewStatus == .changesRequested)
-            #expect(ciStatus == .completedFailure)
-        } else {
-            Issue.record("Expected gitHubPullRequest kind for loaded GitHub item")
-        }
-
-        #expect(freshStore.selectedItemId == "gmail-snap-1")
     }
 
     @Test("Cold-start deserialization enforces 500-item cap on oversized snapshot file")
     func testLoadSnapshotEnforces500Cap() throws {
+        try withSnapshotBackup {
+            let snapshotURL = getSnapshotURL()
+
+            // Generate oversized snapshot
+            let oversizedGmail = (0..<600).map { i in
+                makeTestItem(id: "snap-g-\(i)", title: "Email \(i)")
+            }
+
+            let snapshot = SnapshotData(gmailItems: oversizedGmail, gitHubItems: [], savedAt: Date())
+            let data = try JSONEncoder().encode(snapshot)
+            try writeData(data, to: snapshotURL)
+
+            let store = TriageStore()
+            store.loadSnapshot()
+
+            #expect(store.gmailItems.count == 500)
+            #expect(store.gmailItems.first?.id == "snap-g-0")
+            #expect(store.gmailItems.last?.id == "snap-g-499")
+        }
+    }
+
+    @Test("An old snapshot with GitHub fields still loads its Gmail items")
+    func testOldSnapshotWithGitHubFieldsLoadsGmail() throws {
+        try withSnapshotBackup {
+            let snapshotURL = getSnapshotURL()
+            let contentsBefore = directoryContents()
+            let gmailItem = makeTestItem(id: "gmail-legacy-1", title: "Survivor", isUnread: true)
+
+            let gmailJSON = try JSONEncoder().encode([gmailItem])
+            let gmailObjects = try JSONSerialization.jsonObject(with: gmailJSON)
+
+            // A retired GitHub item shape that the current TriageKind cannot decode.
+            let legacyGitHubItem: [String: Any] = [
+                "id": "owner/repo#1",
+                "source": "gitHub",
+                "title": "Retired issue",
+                "authorName": "octocat",
+                "timestamp": Date().timeIntervalSinceReferenceDate,
+                "isUnread": false,
+                "isStarred": false,
+                "isArchived": false,
+                "tags": ["mention"],
+                "kind": [
+                    "gitHubIssue": [
+                        "number": 1,
+                        "repo": "owner/repo",
+                        "state": "open",
+                        "isAssignedToMe": true
+                    ]
+                ],
+                "webURL": "https://github.com/owner/repo/issues/1"
+            ]
+
+            let object: [String: Any] = [
+                "gmailItems": gmailObjects,
+                "gitHubItems": [legacyGitHubItem],
+                "savedAt": Date().timeIntervalSinceReferenceDate,
+                "dismissedGitHubKeys": ["owner/repo#1"]
+            ]
+            try writeRawSnapshot(object, to: snapshotURL)
+
+            let store = TriageStore()
+            store.loadSnapshot()
+
+            #expect(store.gmailItems.map(\.id) == ["gmail-legacy-1"])
+            #expect(store.selectedItemId == "gmail-legacy-1")
+            #expect(store.activeItems.count == 1)
+
+            // The old file is read, not quarantined.
+            #expect(FileManager.default.fileExists(atPath: snapshotURL.path))
+            let newNames = directoryContents().subtracting(contentsBefore)
+            let quarantined = newNames.filter { $0.hasPrefix("snapshot.corrupt-") }
+            #expect(quarantined.isEmpty)
+        }
+    }
+
+    @Test("A corrupt snapshot is quarantined, does not block the next save, and starts clean")
+    func testCorruptSnapshotIsQuarantined() throws {
         let snapshotURL = getSnapshotURL()
         let backupData = try? Data(contentsOf: snapshotURL)
+        let contentsBefore = directoryContents()
+
         defer {
+            // Restore the original snapshot and remove the quarantine copy.
             if let backupData {
                 try? backupData.write(to: snapshotURL, options: .atomic)
             } else {
                 try? FileManager.default.removeItem(at: snapshotURL)
             }
+            let contentsAfter = directoryContents()
+            for name in contentsAfter.subtracting(contentsBefore)
+            where name.hasPrefix("snapshot.corrupt-") && name.hasSuffix(".json") {
+                try? FileManager.default.removeItem(at: snapshotURL.deletingLastPathComponent().appendingPathComponent(name))
+            }
         }
-
-        // Generate oversized snapshot with 600 items each
-        let oversizedGmail = (0..<600).map { i in
-            makeTestItem(id: "snap-g-\(i)", source: .gmail, title: "Email \(i)")
-        }
-        let oversizedGitHub = (0..<600).map { i in
-            makeTestItem(id: "snap-gh-\(i)", source: .gitHub, title: "PR \(i)")
-        }
-
-        let snapshot = SnapshotData(gmailItems: oversizedGmail, gitHubItems: oversizedGitHub, savedAt: Date())
-        let data = try JSONEncoder().encode(snapshot)
 
         let dir = snapshotURL.deletingLastPathComponent()
         if !FileManager.default.fileExists(atPath: dir.path) {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
-        try data.write(to: snapshotURL, options: .atomic)
+        try Data("{ this is not a snapshot".utf8).write(to: snapshotURL, options: .atomic)
 
         let store = TriageStore()
+        store.gmailItems = [makeTestItem(id: "before-corruption")]
+
         store.loadSnapshot()
 
-        #expect(store.gmailItems.count == 500)
-        #expect(store.gitHubItems.count == 500)
-        #expect(store.gmailItems.first?.id == "snap-g-0")
-        #expect(store.gmailItems.last?.id == "snap-g-499")
+        // Empty Gmail state, no selection, original file moved aside.
+        #expect(store.gmailItems.isEmpty)
+        #expect(store.selectedItemId == nil)
+        #expect(!FileManager.default.fileExists(atPath: snapshotURL.path))
+
+        let newNames = directoryContents().subtracting(contentsBefore)
+        let quarantined = newNames.filter { $0.hasPrefix("snapshot.corrupt-") && $0.hasSuffix(".json") }
+        #expect(quarantined.count == 1)
+
+        // The next save is allowed and writes a fresh snapshot.
+        store.gmailItems = [makeTestItem(id: "after-corruption")]
+        store.saveSnapshotSync()
+
+        #expect(FileManager.default.fileExists(atPath: snapshotURL.path))
+        let decoded = try SnapshotData.load(from: snapshotURL)
+        #expect(decoded.gmailItems.map(\.id) == ["after-corruption"])
     }
 
-    // MARK: - Navigation and Filter Tests
+    @Test("A missing snapshot is skipped and the next save still writes one")
+    func testMissingSnapshotStillSaves() throws {
+        try withSnapshotBackup {
+            let snapshotURL = getSnapshotURL()
+            try? FileManager.default.removeItem(at: snapshotURL)
+
+            let store = TriageStore()
+            let item = makeTestItem(id: "gmail-missing-1")
+            store.gmailItems = [item]
+
+            store.loadSnapshot()
+            #expect(store.gmailItems.map(\.id) == ["gmail-missing-1"])
+
+            store.saveSnapshotSync()
+
+            #expect(FileManager.default.fileExists(atPath: snapshotURL.path))
+            let decoded = try SnapshotData.load(from: snapshotURL)
+            #expect(decoded.gmailItems.map(\.id) == ["gmail-missing-1"])
+        }
+    }
+
+    // MARK: - Navigation Tests
 
     @Test("Keyboard navigation selects next and previous items bounded by active list")
     func testKeyboardSelectionNavigation() {
         let store = TriageStore()
-        let item1 = makeTestItem(id: "item-1", source: .gmail)
-        let item2 = makeTestItem(id: "item-2", source: .gmail)
-        let item3 = makeTestItem(id: "item-3", source: .gmail)
+        let item1 = makeTestItem(id: "item-1")
+        let item2 = makeTestItem(id: "item-2")
+        let item3 = makeTestItem(id: "item-3")
 
         store.setItems([item1, item2, item3], for: .gmail)
         #expect(store.selectedItemId == "item-1")
@@ -497,61 +513,5 @@ struct TriageStoreTests {
         // Boundary: cannot advance before start
         store.selectPrevious()
         #expect(store.selectedItemId == "item-1")
-    }
-
-    @Test("GitHub smart filters correctly isolate CI alerts, mentions, and review requests")
-    func testGitHubSmartFilters() {
-        let store = TriageStore()
-        store.activeWorkspace = .gitHub
-
-        let ciItem = TriageItem(
-            id: "ci-1",
-            source: .gitHub,
-            title: "CI Failed",
-            authorName: "bot",
-            timestamp: Date(),
-            tags: ["ci_activity"],
-            kind: .gitHubNotification(threadId: "ci-1", reason: "ci_activity"),
-            webURL: URL(string: "https://example.com/ci")!
-        )
-
-        let mentionItem = TriageItem(
-            id: "mention-1",
-            source: .gitHub,
-            title: "Hey @dev",
-            authorName: "peer",
-            timestamp: Date(),
-            tags: ["mention"],
-            kind: .gitHubNotification(threadId: "m-1", reason: "mention"),
-            webURL: URL(string: "https://example.com/mention")!
-        )
-
-        let reviewItem = TriageItem(
-            id: "review-1",
-            source: .gitHub,
-            title: "Review requested",
-            authorName: "peer",
-            timestamp: Date(),
-            tags: ["review_requested"],
-            kind: .gitHubPullRequest(number: 10, repo: "r", isDraft: false, reviewStatus: .pending, ciStatus: .neutral),
-            webURL: URL(string: "https://example.com/review")!
-        )
-
-        store.gitHubItems = [ciItem, mentionItem, reviewItem]
-
-        store.gitHubFilter = .all
-        #expect(store.filteredGitHubItems.count == 3)
-
-        store.gitHubFilter = .ciAlerts
-        #expect(store.filteredGitHubItems.count == 1)
-        #expect(store.filteredGitHubItems.first?.id == "ci-1")
-
-        store.gitHubFilter = .mentions
-        #expect(store.filteredGitHubItems.count == 1)
-        #expect(store.filteredGitHubItems.first?.id == "mention-1")
-
-        store.gitHubFilter = .reviewRequests
-        #expect(store.filteredGitHubItems.count == 1)
-        #expect(store.filteredGitHubItems.first?.id == "review-1")
     }
 }

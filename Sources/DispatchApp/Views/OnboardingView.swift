@@ -52,12 +52,12 @@ public struct OnboardingView: View {
                 )
 
                 accountCard(
-                    title: "GitHub Notifications",
+                    title: "GitHub Open Work",
                     icon: "chevron.left.forwardslash.chevron.right",
                     iconColor: .purple,
-                    description: "Add a Personal Access Token with repo & notifications scopes.",
+                    description: "Add a Personal Access Token with the repo scope to see open issues and pull requests involving you.",
                     actionTitle: "Configure GitHub",
-                    isConnected: !preferencesStore.githubPAT.isEmpty
+                    isConnected: preferencesStore.isGitHubConfigured
                 )
             }
             .frame(maxWidth: 580)

@@ -97,264 +97,128 @@ public final class GitHubService: Sendable {
         return (data, httpResponse)
     }
 
-    // MARK: - Assigned Issues
+    // MARK: - Open Work
 
-    /// Fetches open issues assigned to the authenticated user.
+    /// Fetches every open issue and pull request that involves the authenticated
+    /// user, using one search query with its own pagination.
     ///
-    /// Uses the search API instead of `/notifications`, which GitHub only exposes to
-    /// classic personal access tokens. Search works with a fine-grained token limited
-    /// to Issues: Read, and matches what the triage pane actually needs.
-    public func fetchAssignedIssues(
-        lastETag: String?
-    ) async throws -> (items: [TriageItem], newETag: String?, notModified: Bool) {
-        var headers: [String: String] = [:]
-        if let etag = lastETag, !etag.isEmpty {
-            headers["If-None-Match"] = etag
+    /// Pages are followed through the `Link: rel="next"` header, up to four
+    /// pages (400 items). Any non-2xx response on any page throws; a 404 is not
+    /// an empty success. Duplicates across pages are dropped, keeping the first
+    /// occurrence in page order.
+    public func fetchOpenWork() async throws -> OpenWorkFetchResult {
+        let maxPages = 4
+        let maxItems = 400
+
+        guard var components = URLComponents(string: "\(baseURL)/search/issues") else {
+            throw OpenWorkFetchError.transport
+        }
+        components.queryItems = [
+            URLQueryItem(name: "q", value: "is:open involves:@me"),
+            URLQueryItem(name: "sort", value: "updated"),
+            URLQueryItem(name: "order", value: "desc"),
+            URLQueryItem(name: "per_page", value: "100")
+        ]
+        guard let firstPageURL = components.url else {
+            throw OpenWorkFetchError.transport
         }
 
-        let query = "is:issue is:open assignee:@me"
-        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
-        let endpoint = "search/issues?q=\(encodedQuery)&per_page=50&sort=updated&order=desc"
-
-        let (data, response) = try await makeRequest(endpoint: endpoint, headers: headers)
-
-        if response.statusCode == 304 {
-            return (items: [], newETag: lastETag, notModified: true)
-        }
-
-        if response.statusCode == 401 {
-            throw GitHubError.unauthorized
-        }
-
-        if response.statusCode == 403 {
-            var resetDate: Date?
-            if let resetHeader = response.value(forHTTPHeaderField: "x-ratelimit-reset"),
-               let epoch = Double(resetHeader) {
-                resetDate = Date(timeIntervalSince1970: epoch)
-            }
-            throw GitHubError.forbidden(rateLimitReset: resetDate)
-        }
-
-        guard (200...299).contains(response.statusCode) else {
-            let message = String(data: data, encoding: .utf8) ?? "HTTP \(response.statusCode)"
-            throw GitHubError.invalidResponse(statusCode: response.statusCode, message: message)
-        }
-
-        let rawETag = response.value(forHTTPHeaderField: "ETag")
-
-        struct SearchUser: Decodable {
-            let login: String
-            let avatar_url: String?
-        }
-
-        struct SearchItem: Decodable {
-            let id: Int
-            let number: Int
-            let title: String
-            let state: String
-            let updated_at: String
-            let html_url: String
-            let user: SearchUser?
-            let repository_url: String
-        }
-
-        struct SearchResponse: Decodable {
-            let total_count: Int
-            let items: [SearchItem]
-        }
-
-        let searchResponse: SearchResponse
         do {
-            searchResponse = try JSONDecoder().decode(SearchResponse.self, from: data)
+            var nextPage: String? = firstPageURL.absoluteString
+            var pageIndex = 0
+            var matchedCount = 0
+            var items: [OpenWorkItem] = []
+            var seenKeys = Set<String>()
+
+            while let currentPage = nextPage, pageIndex < maxPages {
+                let (data, response) = try await makeRequest(endpoint: currentPage)
+                try Self.validate(response: response, data: data, context: "open work search")
+
+                let page: OpenWorkSearchResponse
+                do {
+                    page = try JSONDecoder().decode(OpenWorkSearchResponse.self, from: data)
+                } catch {
+                    throw OpenWorkFetchError.decoding
+                }
+
+                if pageIndex == 0 {
+                    matchedCount = page.total_count
+                }
+
+                for payload in page.items {
+                    guard let item = Self.mapOpenWorkItem(payload) else { continue }
+                    if seenKeys.insert(item.key).inserted {
+                        items.append(item)
+                    }
+                }
+
+                nextPage = Self.nextPageURL(from: response)
+                pageIndex += 1
+            }
+
+            // Page four advertising a next link means GitHub has more work than
+            // the 400-item cap can show.
+            let hasMoreAfterCap = pageIndex >= maxPages && nextPage != nil
+            let truncated = matchedCount > maxItems || hasMoreAfterCap
+            let complete = !truncated && nextPage == nil
+
+            return OpenWorkFetchResult(
+                items: items,
+                matchedCount: matchedCount,
+                fetchedCount: items.count,
+                truncated: truncated,
+                complete: complete
+            )
+        } catch let error as OpenWorkFetchError {
+            throw error
         } catch {
-            throw GitHubError.decodingError(error.localizedDescription)
-        }
-
-        let isoFormatter = ISO8601DateFormatter()
-        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallbackIsoFormatter = ISO8601DateFormatter()
-
-        let items: [TriageItem] = searchResponse.items.map { issue in
-            let date = isoFormatter.date(from: issue.updated_at)
-                ?? fallbackIsoFormatter.date(from: issue.updated_at)
-                ?? Date()
-
-            // repository_url looks like https://api.github.com/repos/owner/name
-            let repo = issue.repository_url
-                .split(separator: "/")
-                .suffix(2)
-                .joined(separator: "/")
-
-            return TriageItem(
-                id: "\(repo)#\(issue.number)",
-                source: .gitHub,
-                title: issue.title,
-                authorName: repo,
-                authorAvatarURL: issue.user?.avatar_url.flatMap(URL.init(string:)),
-                timestamp: date,
-                isUnread: true,
-                isStarred: false,
-                isArchived: false,
-                tags: [issue.state, "Issue"],
-                kind: .gitHubIssue(
-                    number: issue.number,
-                    repo: repo,
-                    state: issue.state,
-                    isAssignedToMe: true
-                ),
-                webURL: URL(string: issue.html_url) ?? URL(string: "https://github.com/issues")!
-            )
-        }
-
-        return (items: items, newETag: rawETag, notModified: false)
-    }
-
-    // MARK: - Open Work Backfill
-
-    /// Fetches every open issue and pull request for the supplied repositories
-    /// and/or repository owners.
-    ///
-    /// Unlike `/notifications` (which only returns unread threads), this is used
-    /// once at launch to seed the workspace with work that already existed
-    /// before Dispatch was installed.
-    ///
-    /// - Parameters:
-    ///   - repositories: `owner/repo` entries to scan.
-    ///   - owners: GitHub users or organizations. Every open issue and pull
-    ///     request across all repositories they own is included, so the user
-    ///     can track an entire account instead of pasting each repository.
-    ///   - login: Authenticated user's login, used to flag items assigned to them.
-    ///   - maxPagesPerSource: Page cap per repository or owner search.
-    ///
-    /// When both `repositories` and `owners` are empty, falls back to
-    /// `/issues?filter=all`, i.e. every open issue and pull request the
-    /// authenticated user is involved with.
-    public func fetchOpenIssuesAndPullRequests(
-        repositories: [String] = [],
-        owners: [String] = [],
-        login: String? = nil,
-        maxPagesPerSource: Int = 3
-    ) async throws -> [TriageItem] {
-        let normalizedRepositories = Self.normalizeRepositories(repositories)
-        let normalizedOwners = Self.normalizeOwners(owners)
-
-        if normalizedRepositories.isEmpty && normalizedOwners.isEmpty {
-            let pages = try await requestAllPages(
-                endpoint: "issues?filter=all&state=open&sort=updated&per_page=100",
-                context: "open issues",
-                maxPages: maxPagesPerSource
-            )
-            return try Self.decodeOpenWork(pages: pages, login: login)
-        }
-
-        return await withTaskGroup(of: [TriageItem].self) { group in
-            for repo in normalizedRepositories {
-                group.addTask {
-                    // One unreachable repository must not blank the whole
-                    // backfill, so each source fails independently.
-                    guard let pages = try? await self.requestAllPages(
-                        endpoint: "repos/\(repo)/issues?state=open&sort=updated&per_page=100",
-                        context: "open issues for \(repo)",
-                        maxPages: maxPagesPerSource
-                    ), let items = try? Self.decodeOpenWork(pages: pages, login: login) else {
-                        return []
-                    }
-                    return items
-                }
-            }
-
-            for owner in normalizedOwners {
-                group.addTask {
-                    // The search API's `user:` qualifier matches repositories
-                    // owned by a user or organization, so one query covers an
-                    // entire account without enumerating its repositories.
-                    let query = "is:open+user:\(owner)"
-                    guard let pages = try? await self.requestAllPages(
-                        endpoint: "search/issues?q=\(query)&sort=updated&order=desc&per_page=100",
-                        context: "open issues for \(owner)",
-                        maxPages: maxPagesPerSource
-                    ), let items = try? Self.decodeSearchOpenWork(pages: pages, login: login) else {
-                        return []
-                    }
-                    return items
-                }
-            }
-
-            var items: [TriageItem] = []
-            for await batch in group {
-                items.append(contentsOf: batch)
-            }
-            return Self.deduplicated(items)
+            throw Self.openWorkError(from: error)
         }
     }
 
-    /// Normalizes user-provided `owner/repo` strings, dropping blanks and duplicates.
-    public static func normalizeRepositories(_ raw: [String]) -> [String] {
-        var seen = Set<String>()
-        return raw.compactMap { entry in
-            let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
-            let parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
-            guard parts.count == 2 else { return nil }
-            let repo = parts.joined(separator: "/")
-            return seen.insert(repo.lowercased()).inserted ? repo : nil
-        }
-    }
-
-    /// Normalizes user-provided GitHub usernames or organization names.
-    ///
-    /// Accepts a bare login, an `@login`, or a pasted profile URL, drops blanks,
-    /// malformed entries and duplicates, and preserves the first spelling seen.
-    public static func normalizeOwners(_ raw: [String]) -> [String] {
-        var seen = Set<String>()
-        return raw.compactMap { entry in
-            var candidate = entry.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if let hostRange = candidate.range(of: "github.com/") {
-                // Accept a pasted profile URL, keeping only the account segment.
-                candidate = String(candidate[hostRange.upperBound...])
-                if let slash = candidate.firstIndex(of: "/") {
-                    candidate = String(candidate[..<slash])
-                }
-            } else if candidate.contains("/") {
-                // `owner/repo` belongs in the repository list, not here.
-                return nil
-            }
-
-            candidate = candidate.trimmingCharacters(in: CharacterSet(charactersIn: "@ "))
-
-            guard !candidate.isEmpty,
-                  candidate.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else {
-                return nil
-            }
-
-            return seen.insert(candidate.lowercased()).inserted ? candidate : nil
-        }
-    }
-
-    // MARK: - Backfill HTTP & Parsing Helpers
-
-    private func requestAllPages(
-        endpoint: String,
-        context: String,
-        maxPages: Int
-    ) async throws -> [Data] {
-        var pages: [Data] = []
-        var next: String? = endpoint
-        var pageCount = 0
-
-        while let current = next, pageCount < maxPages {
-            let (data, response) = try await makeRequest(endpoint: current)
-            if response.statusCode == 404 {
-                return pages
-            }
-            try Self.validate(response: response, data: data, context: context)
-            pages.append(data)
-            pageCount += 1
-            next = Self.nextPageURL(from: response)
+    /// Maps the underlying GitHub, auth and URL errors onto the Open Work error
+    /// surface. The store never sees `GitHubError` or `AuthError`.
+    private static func openWorkError(from error: Error) -> OpenWorkFetchError {
+        if let openWorkError = error as? OpenWorkFetchError {
+            return openWorkError
         }
 
-        return pages
+        if let gitHubError = error as? GitHubError {
+            switch gitHubError {
+            case .missingToken:
+                return .notConfigured
+            case .unauthorized:
+                return .unauthorized
+            case .forbidden(let resetAt):
+                return .forbidden(resetAt: resetAt)
+            case .notFound:
+                return .notFound
+            case .invalidResponse(let statusCode, _):
+                return .server(status: statusCode)
+            case .decodingError:
+                return .decoding
+            case .invalidURL:
+                return .transport
+            }
+        }
+
+        if let authError = error as? AuthError {
+            switch authError {
+            case .keychainError, .decodingFailed:
+                return .notConfigured
+            default:
+                return .transport
+            }
+        }
+
+        if error is URLError {
+            return .transport
+        }
+
+        return .transport
     }
+
+    // MARK: - HTTP Validation Helpers
 
     private static func validate(
         response: HTTPURLResponse,
@@ -402,20 +266,20 @@ public final class GitHubService: Sendable {
 
     // Decoding shapes shared by the repository listing and the scoped search
     // endpoints. The search endpoint nests the same issue records under `items`.
-    private struct OpenWorkUserPayload: Decodable {
+    struct OpenWorkUserPayload: Decodable {
         let login: String
         let avatar_url: String?
     }
 
-    private struct OpenWorkLabelPayload: Decodable {
+    struct OpenWorkLabelPayload: Decodable {
         let name: String
     }
 
-    private struct OpenWorkPullRequestReference: Decodable {
+    struct OpenWorkPullRequestReference: Decodable {
         let url: String?
     }
 
-    private struct OpenWorkIssuePayload: Decodable {
+    struct OpenWorkIssuePayload: Decodable {
         let number: Int
         let title: String
         let state: String
@@ -429,207 +293,46 @@ public final class GitHubService: Sendable {
         let pull_request: OpenWorkPullRequestReference?
     }
 
-    private struct OpenWorkSearchResponse: Decodable {
+    struct OpenWorkSearchResponse: Decodable {
+        let total_count: Int
         let items: [OpenWorkIssuePayload]
     }
 
-    private static func decodeOpenWork(
-        pages: [Data],
-        login: String?
-    ) throws -> [TriageItem] {
-        var issues: [OpenWorkIssuePayload] = []
-
-        for page in pages {
-            do {
-                issues.append(contentsOf: try JSONDecoder().decode([OpenWorkIssuePayload].self, from: page))
-            } catch {
-                throw GitHubError.decodingError(error.localizedDescription)
-            }
+    /// Maps one search record to an `OpenWorkItem`.
+    ///
+    /// Records with an unparsable `repository_url` or `html_url` are skipped.
+    /// A missing author becomes `"ghost"`; an unparsable `updated_at` falls back
+    /// to `Date()`.
+    static func mapOpenWorkItem(_ payload: OpenWorkIssuePayload) -> OpenWorkItem? {
+        guard let repository = repositoryName(from: payload.repository_url),
+              let webURL = URL(string: payload.html_url) else {
+            return nil
         }
 
-        return mapOpenWork(issues: issues, login: login)
-    }
-
-    private static func decodeSearchOpenWork(
-        pages: [Data],
-        login: String?
-    ) throws -> [TriageItem] {
-        var issues: [OpenWorkIssuePayload] = []
-
-        for page in pages {
-            do {
-                issues.append(
-                    contentsOf: try JSONDecoder().decode(OpenWorkSearchResponse.self, from: page).items
-                )
-            } catch {
-                throw GitHubError.decodingError(error.localizedDescription)
-            }
-        }
-
-        return mapOpenWork(issues: issues, login: login)
-    }
-
-    private static func mapOpenWork(
-        issues: [OpenWorkIssuePayload],
-        login: String?
-    ) -> [TriageItem] {
         let fractionalFormatter = ISO8601DateFormatter()
         fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let plainFormatter = ISO8601DateFormatter()
 
-        var items: [TriageItem] = []
+        let updatedAt = fractionalFormatter.date(from: payload.updated_at)
+            ?? plainFormatter.date(from: payload.updated_at)
+            ?? Date()
 
-        for issue in issues {
-            guard let repo = repositoryName(from: issue.repository_url),
-                  let webURL = URL(string: issue.html_url) else { continue }
-
-            let date = fractionalFormatter.date(from: issue.updated_at)
-                ?? plainFormatter.date(from: issue.updated_at)
-                ?? Date()
-
-            let isPullRequest = issue.pull_request != nil
-            let labels = issue.labels?.map(\.name) ?? []
-            let isAssignedToMe: Bool = {
-                guard let login, !login.isEmpty else { return false }
-                return (issue.assignees ?? []).contains {
-                    $0.login.caseInsensitiveCompare(login) == .orderedSame
-                }
-            }()
-
-            let kind: TriageKind = isPullRequest
-                ? .gitHubPullRequest(
-                    number: issue.number,
-                    repo: repo,
-                    isDraft: issue.draft ?? false,
-                    reviewStatus: .none,
-                    ciStatus: .neutral
-                )
-                : .gitHubIssue(
-                    number: issue.number,
-                    repo: repo,
-                    state: issue.state,
-                    isAssignedToMe: isAssignedToMe
-                )
-
-            let idPrefix = isPullRequest ? "gh:pr:" : "gh:issue:"
-
-            items.append(
-                TriageItem(
-                    id: "\(idPrefix)\(repo)#\(issue.number)",
-                    source: .gitHub,
-                    title: issue.title,
-                    authorName: issue.user?.login ?? "ghost",
-                    authorAvatarURL: issue.user?.avatar_url.flatMap { URL(string: $0) },
-                    timestamp: date,
-                    isUnread: false,
-                    isStarred: false,
-                    isArchived: false,
-                    tags: labels,
-                    kind: kind,
-                    webURL: webURL
-                )
-            )
-        }
-
-        return items
-    }
-
-    private static func deduplicated(_ items: [TriageItem]) -> [TriageItem] {
-        var seen = Set<String>()
-        var unique: [TriageItem] = []
-        for item in items where seen.insert(item.id).inserted {
-            unique.append(item)
-        }
-        return unique.sorted(by: newestFirst)
+        return OpenWorkItem(
+            key: "\(repository.lowercased())#\(payload.number)",
+            repository: repository,
+            number: payload.number,
+            kind: payload.pull_request != nil ? .pullRequest : .issue,
+            title: payload.title,
+            authorLogin: payload.user?.login ?? "ghost",
+            updatedAt: updatedAt,
+            webURL: webURL
+        )
     }
 
     private static func repositoryName(from repositoryURL: String) -> String? {
         let parts = repositoryURL.split(separator: "/")
         guard parts.count >= 2 else { return nil }
         return "\(parts[parts.count - 2])/\(parts[parts.count - 1])"
-    }
-
-    private static func newestFirst(_ lhs: TriageItem, _ rhs: TriageItem) -> Bool {
-        if lhs.timestamp != rhs.timestamp {
-            return lhs.timestamp > rhs.timestamp
-        }
-        return lhs.id < rhs.id
-    }
-
-    // MARK: - Check Runs
-
-    public func fetchCheckRuns(
-        owner: String,
-        repo: String,
-        ref: String
-    ) async throws -> CheckSuiteStatus {
-        let endpoint = "repos/\(owner)/\(repo)/commits/\(ref)/check-runs"
-        let (data, response) = try await makeRequest(endpoint: endpoint)
-
-        if response.statusCode == 401 { throw GitHubError.unauthorized }
-        if response.statusCode == 404 { return .neutral }
-
-        guard (200...299).contains(response.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? "HTTP \(response.statusCode)"
-            throw GitHubError.invalidResponse(statusCode: response.statusCode, message: msg)
-        }
-
-        struct CheckRunItem: Decodable {
-            let id: Int
-            let status: String
-            let conclusion: String?
-        }
-
-        struct CheckRunsResponse: Decodable {
-            let total_count: Int
-            let check_runs: [CheckRunItem]
-        }
-
-        let checkRunsResult: CheckRunsResponse
-        do {
-            checkRunsResult = try JSONDecoder().decode(CheckRunsResponse.self, from: data)
-        } catch {
-            throw GitHubError.decodingError(error.localizedDescription)
-        }
-
-        let runs = checkRunsResult.check_runs
-        guard !runs.isEmpty else { return .neutral }
-
-        let hasFailure = runs.contains { run in
-            if let conclusion = run.conclusion?.lowercased() {
-                return conclusion == "failure"
-                    || conclusion == "timed_out"
-                    || conclusion == "action_required"
-                    || conclusion == "cancelled"
-            }
-            return false
-        }
-        if hasFailure {
-            return .completedFailure
-        }
-
-        let hasInProgress = runs.contains { $0.status.lowercased() == "in_progress" }
-        if hasInProgress {
-            return .inProgress
-        }
-
-        let hasQueued = runs.contains { $0.status.lowercased() == "queued" }
-        if hasQueued {
-            return .queued
-        }
-
-        let allCompleted = runs.allSatisfy { $0.status.lowercased() == "completed" }
-        if allCompleted {
-            let allSuccess = runs.allSatisfy { run in
-                guard let c = run.conclusion?.lowercased() else { return false }
-                return c == "success" || c == "neutral" || c == "skipped"
-            }
-            if allSuccess {
-                return .completedSuccess
-            }
-        }
-
-        return .neutral
     }
 
     // MARK: - Issue & Comments Details
@@ -712,39 +415,5 @@ public final class GitHubService: Sendable {
             createdAt: issueDate,
             comments: comments
         )
-    }
-
-    // MARK: - Notification Dismissal & Unsubscribe
-
-    public func dismissNotification(threadId: String) async throws {
-        let (data, response) = try await makeRequest(
-            endpoint: "notifications/threads/\(threadId)",
-            method: "PATCH"
-        )
-
-        if response.statusCode == 401 { throw GitHubError.unauthorized }
-
-        // GitHub returns HTTP 205 (Reset Content), 200, or 204
-        guard [200, 204, 205].contains(response.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? "HTTP \(response.statusCode)"
-            throw GitHubError.invalidResponse(statusCode: response.statusCode, message: msg)
-        }
-    }
-
-    public func unsubscribeNotification(threadId: String) async throws {
-        let (data, response) = try await makeRequest(
-            endpoint: "notifications/threads/\(threadId)/subscription",
-            method: "DELETE"
-        )
-
-        if response.statusCode == 401 { throw GitHubError.unauthorized }
-
-        guard [200, 204].contains(response.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? "HTTP \(response.statusCode)"
-            throw GitHubError.invalidResponse(statusCode: response.statusCode, message: msg)
-        }
-
-        // Also mark as read locally and on server
-        _ = try? await dismissNotification(threadId: threadId)
     }
 }

@@ -29,26 +29,22 @@ public struct TriageStreamView: View {
     }
 
     private var streamTitle: String {
-        switch store.activeWorkspace {
-        case .gmail:
-            return "Gmail Inbox"
-        case .gitHub:
-            return "GitHub (\(store.gitHubFilter.rawValue))"
-        }
+        "Gmail Inbox"
     }
 
+    /// Gmail-only after workspace routing. Open Work has its own empty states.
     @ViewBuilder
     private var emptyStateView: some View {
         VStack(spacing: 12) {
             Spacer()
-            Image(systemName: "checkmark.circle.fill")
+            Image(systemName: "envelope.open")
                 .font(.system(size: 44, weight: .light))
                 .foregroundStyle(.green)
 
-            Text("All Caught Up")
+            Text("Inbox Zero")
                 .font(.headline)
 
-            Text("No unhandled items in this stream.")
+            Text("No unread messages in your Gmail inbox.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -150,14 +146,6 @@ private struct TriageStreamRow: View {
         switch item.kind {
         case .email(_, let snippet, _):
             return snippet.isEmpty ? "No preview available" : snippet
-        case .gitHubIssue(let number, let repo, _, let assigned):
-            let assignment = assigned ? " • Assigned to you" : ""
-            return "#\(number) in \(repo)\(assignment)"
-        case .gitHubPullRequest(let number, let repo, let isDraft, _, _):
-            let draft = isDraft ? " [Draft]" : ""
-            return "Pull Request #\(number) in \(repo)\(draft)"
-        case .gitHubNotification(_, let reason):
-            return "Notification reason: \(reason)"
         }
     }
 
@@ -165,20 +153,6 @@ private struct TriageStreamRow: View {
     private var badgesView: some View {
         HStack(spacing: 4) {
             switch item.kind {
-            case .gitHubPullRequest(_, _, _, let reviewStatus, let ciStatus):
-                if reviewStatus != .none {
-                    reviewBadge(status: reviewStatus)
-                }
-                if ciStatus != .neutral {
-                    ciBadge(status: ciStatus)
-                }
-            case .gitHubIssue(let number, _, let state, _):
-                pillView(text: "#\(number)", color: .secondary)
-                if state.lowercased() == "closed" {
-                    pillView(text: "Closed", color: .purple)
-                } else {
-                    pillView(text: "Open", color: .green)
-                }
             case .email(_, _, let hasHtml):
                 if hasHtml {
                     pillView(text: "HTML", color: .secondary)
@@ -188,39 +162,9 @@ private struct TriageStreamRow: View {
                         pillView(text: tag, color: .secondary)
                     }
                 }
-            case .gitHubNotification(_, let reason):
-                pillView(text: reason, color: .secondary)
             }
         }
         .padding(.top, 2)
-    }
-
-    private func reviewBadge(status: ReviewStatus) -> some View {
-        switch status {
-        case .approved:
-            return pillView(text: "Approved", color: .green)
-        case .changesRequested:
-            return pillView(text: "Changes Requested", color: .red)
-        case .pending:
-            return pillView(text: "Review Requested", color: .yellow)
-        case .none:
-            return pillView(text: "", color: .clear)
-        }
-    }
-
-    private func ciBadge(status: CheckSuiteStatus) -> some View {
-        switch status {
-        case .completedSuccess:
-            return pillView(text: "CI Passed", color: .green)
-        case .completedFailure:
-            return pillView(text: "CI Failed", color: .red)
-        case .inProgress:
-            return pillView(text: "CI Running", color: .yellow)
-        case .queued:
-            return pillView(text: "CI Queued", color: .orange)
-        case .neutral:
-            return pillView(text: "", color: .clear)
-        }
     }
 
     private func pillView(text: String, color: Color) -> some View {

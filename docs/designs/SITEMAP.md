@@ -11,3 +11,4 @@
 | [critic_report.md](critic_report.md) | 2026-11-03 | Swarm Compiler | Stage 7 | Antagonistic multi-lens critique on system architecture, structure, and style. |
 | [intermediate_zoom_out_report.md](intermediate_zoom_out_report.md) | 2026-11-03 | `egm-zoom-out` | Stage 8 | Intermediate filter striking down over-engineering traps from prior stages. |
 | [implementation_readiness_report.md](implementation_readiness_report.md) | 2026-11-03 | Swarm Compiler | Stage 9 | Detailed implementation audit on APIs, models, build manifests, and sandbox. |
+| [github_open_work.md](github_open_work.md) | 2026-11-09 | Dispatch maintainer | Proposed | Replaces the merged GitHub backfill with a read-only Open Work view: one involvement query, 15-minute refresh, visible status, no unread state, and a four-page cap. |

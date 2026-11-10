@@ -17,11 +17,13 @@ extension EnvironmentValues {
 /// local coding agent dispatch configuration.
 public struct SettingsView: View {
     @Environment(PreferencesStore.self) private var preferencesStore
+    @Environment(OpenWorkStore.self) private var openWorkStore
     @Environment(\.authService) private var authService
 
     @State private var tempGitHubPAT: String = ""
     @State private var isSigningInGoogle: Bool = false
     @State private var isValidatingGitHub: Bool = false
+    @State private var isShowingClearConfirmation: Bool = false
     @State private var googleStatus: String? = nil
     @State private var gitHubStatus: String? = nil
     @State private var errorMessage: String? = nil
@@ -47,8 +49,13 @@ public struct SettingsView: View {
         }
         .frame(width: 540, height: 520)
         .padding(20)
-        .onAppear {
-            tempGitHubPAT = preferencesStore.githubPAT
+        .alert("Clear GitHub PAT?", isPresented: $isShowingClearConfirmation) {
+            Button("Clear PAT", role: .destructive) {
+                Task { await clearGitHubPAT() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Open Work will disconnect and must fetch again after you save a token. Hidden items stay hidden.")
         }
     }
 
@@ -112,17 +119,13 @@ public struct SettingsView: View {
                     SecureField("GitHub PAT:", text: $tempGitHubPAT)
                         .textFieldStyle(.roundedBorder)
 
-                    Text("Generate a Classic Personal Access Token on GitHub with scopes:")
+                    Text("Generate a Classic Personal Access Token on GitHub with this scope:")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    HStack(spacing: 8) {
-                        Text("• repo")
-                            .font(.system(.caption, design: .monospaced))
-                        Text("• notifications")
-                            .font(.system(.caption, design: .monospaced))
-                    }
-                    .foregroundStyle(.secondary)
+                    Text("• repo")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
 
                     HStack {
                         Button {
@@ -137,14 +140,9 @@ public struct SettingsView: View {
                         }
                         .disabled(tempGitHubPAT.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isValidatingGitHub)
 
-                        if !preferencesStore.githubPAT.isEmpty {
+                        if preferencesStore.isGitHubConfigured {
                             Button("Clear PAT") {
-                                tempGitHubPAT = ""
-                                preferencesStore.githubPAT = ""
-                                gitHubStatus = "GitHub token removed"
-                                Task {
-                                    try? await authService.deleteKeychainValue(key: AuthService.gitHubPATKey)
-                                }
+                                isShowingClearConfirmation = true
                             }
                         }
                     }
@@ -154,52 +152,11 @@ public struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.green)
                     }
-                }
-                .padding(.vertical, 4)
-            }
 
-            Section {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Open Work Backfill")
-                        .font(.headline)
-
-                    Text("GitHub Users or Organizations")
-                        .font(.subheadline.weight(.semibold))
-
-                    TextField("@username or organization", text: trackedOwnersBinding, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                        .lineLimit(2...4)
-
-                    Text("One account per line. Dispatch loads every open issue and pull request across all repositories owned by these users or organizations.")
+                    Text(openWorkScopeText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-
-                    Text("Repositories (optional)")
-                        .font(.subheadline.weight(.semibold))
-
-                    TextField("owner/repo", text: trackedRepositoriesBinding, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                        .lineLimit(2...4)
-
-                    Text("Narrow the backfill to specific repositories, one per line. Leave both lists empty to include everything you are involved with.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    HStack(spacing: 12) {
-                        Button("Backfill Now") {
-                            NotificationCenter.default.post(
-                                name: .dispatchGitHubBackfillRequested,
-                                object: nil
-                            )
-                        }
-                        .disabled(preferencesStore.githubPAT.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                        if !preferencesStore.githubUsername.isEmpty {
-                            Text("@\(preferencesStore.githubUsername)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.vertical, 4)
             }
@@ -320,28 +277,11 @@ public struct SettingsView: View {
 
     // MARK: - Actions
 
-    private var trackedRepositoriesBinding: Binding<String> {
-        Binding(
-            get: { preferencesStore.trackedRepositories.joined(separator: "\n") },
-            set: { newValue in
-                preferencesStore.trackedRepositories = newValue
-                    .split(whereSeparator: { $0 == "\n" || $0 == "," })
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-            }
-        )
-    }
-
-    private var trackedOwnersBinding: Binding<String> {
-        Binding(
-            get: { preferencesStore.trackedOwners.joined(separator: "\n") },
-            set: { newValue in
-                preferencesStore.trackedOwners = newValue
-                    .split(whereSeparator: { $0 == "\n" || $0 == "," })
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-            }
-        )
+    private var openWorkScopeText: String {
+        let subject = preferencesStore.githubUsername.isEmpty
+            ? "you"
+            : "@\(preferencesStore.githubUsername)"
+        return "Open Work shows open issues and pull requests involving \(subject) that this token can read: authored, assigned, mentioned, or commented on. Review requests and subscriptions are not included."
     }
 
     private func signInWithGoogle() async {
@@ -403,15 +343,29 @@ public struct SettingsView: View {
 
         do {
             let result = try await authService.validateGitHubPAT(token: token)
-            preferencesStore.githubPAT = token
             preferencesStore.githubUsername = result.username
+            preferencesStore.isGitHubConfigured = true
+            openWorkStore.isConfigured = true
             gitHubStatus = "Connected as @\(result.username) (Scopes: \(result.scopes.joined(separator: ", ")))"
-            NotificationCenter.default.post(
-                name: .dispatchGitHubBackfillRequested,
-                object: nil
-            )
+            Task { await openWorkStore.refresh() }
         } catch {
             errorMessage = "GitHub PAT validation failed: \(error.localizedDescription)"
         }
+    }
+
+    private func clearGitHubPAT() async {
+        do {
+            try await authService.deleteKeychainValue(key: AuthService.gitHubPATKey)
+        } catch {
+            errorMessage = "Failed to clear GitHub token: \(error.localizedDescription)"
+            return
+        }
+
+        UserDefaults.standard.removeObject(forKey: LegacyStateMigrator.legacyPATKey)
+        preferencesStore.isGitHubConfigured = false
+        openWorkStore.isConfigured = false
+        openWorkStore.clear()
+        tempGitHubPAT = ""
+        gitHubStatus = "GitHub token removed"
     }
 }

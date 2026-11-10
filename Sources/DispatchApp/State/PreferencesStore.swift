@@ -7,10 +7,7 @@ import Observation
 public final class PreferencesStore {
     private enum Keys {
         static let googleClientId = "dispatch.googleClientId"
-        static let githubPAT = "dispatch.githubPAT"
         static let githubUsername = "dispatch.githubUsername"
-        static let trackedRepositories = "dispatch.trackedRepositories"
-        static let trackedOwners = "dispatch.trackedOwners"
         static let projectsDirectory = "dispatch.projectsDirectory"
         static let preferredTerminal = "dispatch.preferredTerminal"
         static let preferredAgent = "dispatch.preferredAgent"
@@ -26,13 +23,6 @@ public final class PreferencesStore {
         }
     }
 
-    /// GitHub Personal Access Token (stored locally or synchronized with Keychain).
-    public var githubPAT: String {
-        didSet {
-            defaults.set(githubPAT, forKey: Keys.githubPAT)
-        }
-    }
-
     /// Login of the authenticated GitHub user, captured when a PAT is validated.
     public var githubUsername: String {
         didSet {
@@ -40,21 +30,9 @@ public final class PreferencesStore {
         }
     }
 
-    /// `owner/repo` entries whose open issues and pull requests are backfilled.
-    public var trackedRepositories: [String] {
-        didSet {
-            defaults.set(trackedRepositories, forKey: Keys.trackedRepositories)
-        }
-    }
-
-    /// GitHub users or organizations whose entire repository set is backfilled.
-    /// Together with an empty `trackedRepositories` list, an empty list here
-    /// means "everything the authenticated user is involved with".
-    public var trackedOwners: [String] {
-        didSet {
-            defaults.set(trackedOwners, forKey: Keys.trackedOwners)
-        }
-    }
+    /// In-memory GitHub connection state, set from the Keychain at launch and by
+    /// Settings on validate or clear. Never persisted.
+    public var isGitHubConfigured: Bool = false
 
     /// Default directory for local software projects (defaults to `~/Projects`).
     public var projectsDirectory: String {
@@ -93,10 +71,7 @@ public final class PreferencesStore {
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.googleClientId = defaults.string(forKey: Keys.googleClientId) ?? ""
-        self.githubPAT = defaults.string(forKey: Keys.githubPAT) ?? ""
         self.githubUsername = defaults.string(forKey: Keys.githubUsername) ?? ""
-        self.trackedRepositories = defaults.stringArray(forKey: Keys.trackedRepositories) ?? []
-        self.trackedOwners = defaults.stringArray(forKey: Keys.trackedOwners) ?? []
         self.projectsDirectory = defaults.string(forKey: Keys.projectsDirectory) ?? "~/Projects"
 
         if let termRaw = defaults.string(forKey: Keys.preferredTerminal),
@@ -111,16 +86,6 @@ public final class PreferencesStore {
         self.preferredAgent = agent
         self.agentCommand = defaults.string(forKey: Keys.agentCommand)
             ?? agent.defaultCommand
-    }
-
-    /// Tracked repositories, normalized to well-formed, de-duplicated `owner/repo` entries.
-    public var normalizedTrackedRepositories: [String] {
-        GitHubService.normalizeRepositories(trackedRepositories)
-    }
-
-    /// Tracked users/organizations, normalized to well-formed, de-duplicated logins.
-    public var normalizedTrackedOwners: [String] {
-        GitHubService.normalizeOwners(trackedOwners)
     }
 
     /// Resolves local repository path given a repository name (e.g. "repo-name" or "owner/repo-name").
@@ -151,9 +116,4 @@ public final class PreferencesStore {
 
         return candidateSimple
     }
-}
-
-extension Notification.Name {
-    /// Posted when the user asks to re-run the open issue / pull request backfill.
-    static let dispatchGitHubBackfillRequested = Notification.Name("dispatch.githubBackfillRequested")
 }

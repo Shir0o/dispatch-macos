@@ -6,7 +6,10 @@ import AppKit
 
 public actor SyncCoordinator {
     private let gmailService: GmailService
-    private let gitHubService: GitHubService
+
+    /// Called after every sync cycle. The Open Work store owns its own 15-minute
+    /// clock, so the coordinator only supplies the trigger.
+    private let refreshOpenWork: @MainActor @Sendable () async -> Void
 
     private var isRunning: Bool = false
     private var isSleeping: Bool = false
@@ -17,21 +20,9 @@ public actor SyncCoordinator {
     private var wakeObserverTask: Task<Void, Never>?
 
     public private(set) var lastGmailHistoryId: String?
-    public private(set) var lastGitHubETag: String?
 
     // Update callback closure
     public var onItemsUpdated: (@Sendable ([TriageItem], TriageSource) -> Void)?
-
-    // Backfill callback closure (open issues / pull requests)
-    public var onBackfillUpdated: (@Sendable ([TriageItem]) -> Void)?
-
-    // Backfill scope, configured from preferences before `start()`.
-    private var backfillRepositories: [String] = []
-    private var backfillOwners: [String] = []
-    private var backfillLogin: String?
-    private var hasCompletedGitHubBackfill = false
-    private var isBackfilling = false
-    private var pollCycleCount = 0
 
     // Stream continuations for consumers subscribing via AsyncStream
     private var streamContinuations: [UUID: AsyncStream<([TriageItem], TriageSource)>.Continuation] = [:]
@@ -42,10 +33,10 @@ public actor SyncCoordinator {
 
     public init(
         gmailService: GmailService,
-        gitHubService: GitHubService
+        refreshOpenWork: @escaping @MainActor @Sendable () async -> Void
     ) {
         self.gmailService = gmailService
-        self.gitHubService = gitHubService
+        self.refreshOpenWork = refreshOpenWork
         self.pathMonitor = NWPathMonitor()
     }
 
@@ -67,10 +58,9 @@ public actor SyncCoordinator {
         startNotificationObservers()
         startPollingLoop()
 
-        // Bootstrap live notifications and pre-existing open work in parallel.
-        async let bootstrap: Void = performSyncCycle()
-        async let backfill: Void = backfillGitHubIfNeeded()
-        _ = await (bootstrap, backfill)
+        // Bootstrap Gmail, then let Open Work decide whether a refresh is due.
+        await performSyncCycle()
+        await refreshOpenWork()
     }
 
     public func stop() async {
@@ -106,67 +96,6 @@ public actor SyncCoordinator {
 
     public func setOnItemsUpdated(_ callback: (@Sendable ([TriageItem], TriageSource) -> Void)?) {
         self.onItemsUpdated = callback
-    }
-
-    public func setOnBackfillUpdated(_ callback: (@Sendable ([TriageItem]) -> Void)?) {
-        self.onBackfillUpdated = callback
-    }
-
-    // MARK: - Open Work Backfill
-
-    /// Configures the backfill scope. `repositories` accepts `owner/repo`
-    /// entries and `owners` accepts GitHub users or organizations whose entire
-    /// repository set should be scanned. When both are empty the backfill
-    /// covers "every open issue and pull request the user is involved with".
-    public func setBackfillConfiguration(
-        repositories: [String],
-        owners: [String] = [],
-        login: String?
-    ) {
-        self.backfillRepositories = repositories
-        self.backfillOwners = owners
-        self.backfillLogin = login
-    }
-
-    /// Fetches pre-existing open issues and pull requests and publishes them to
-    /// `onBackfillUpdated`. Safe to call repeatedly; the store merges by
-    /// canonical issue/PR identity.
-    public func performGitHubBackfill(
-        repositories: [String]? = nil,
-        owners: [String]? = nil,
-        login: String? = nil
-    ) async {
-        if let repositories {
-            backfillRepositories = repositories
-        }
-        if let owners {
-            backfillOwners = owners
-        }
-        if let login {
-            backfillLogin = login
-        }
-
-        guard isRunning, !isSleeping, isNetworkAvailable, !isBackfilling else { return }
-        isBackfilling = true
-        defer { isBackfilling = false }
-
-        do {
-            let items = try await gitHubService.fetchOpenIssuesAndPullRequests(
-                repositories: backfillRepositories,
-                owners: backfillOwners,
-                login: backfillLogin
-            )
-            hasCompletedGitHubBackfill = true
-            onBackfillUpdated?(items)
-        } catch {
-            // Missing token, rate limit, or offline. Retried on the next launch
-            // or manual trigger; live notifications continue unaffected.
-        }
-    }
-
-    private func backfillGitHubIfNeeded() async {
-        guard !hasCompletedGitHubBackfill else { return }
-        await performGitHubBackfill()
     }
 
     // MARK: - AsyncStream Publishers
@@ -217,28 +146,16 @@ public actor SyncCoordinator {
                 }
                 guard let self = self else { break }
                 await self.performSyncCycle()
-                await self.refreshBackfillIfDue()
+                await self.refreshOpenWork()
             }
         }
-    }
-
-    /// Re-runs the open work backfill roughly every 15 minutes (20 polls) so
-    /// closed issues and merged pull requests drop out of the workspace.
-    private func refreshBackfillIfDue() async {
-        pollCycleCount += 1
-        guard pollCycleCount % 20 == 0 else { return }
-        await performGitHubBackfill()
     }
 
     // MARK: - Sync Execution
 
     public func performSyncCycle() async {
         guard isRunning && !isSleeping && isNetworkAvailable else { return }
-
-        async let gmailTask: Void = syncGmail()
-        async let gitHubTask: Void = syncGitHub()
-
-        _ = await (gmailTask, gitHubTask)
+        await syncGmail()
     }
 
     private func syncGmail() async {
@@ -275,18 +192,6 @@ public actor SyncCoordinator {
             } catch {
                 // Backoff silently until next sync cycle
             }
-        }
-    }
-
-    private func syncGitHub() async {
-        do {
-            let result = try await gitHubService.fetchAssignedIssues(lastETag: lastGitHubETag)
-            if !result.notModified {
-                self.lastGitHubETag = result.newETag
-                emitUpdate(items: result.items, source: .gitHub)
-            }
-        } catch {
-            // Network or auth error; will retry on next polling loop
         }
     }
 
@@ -363,6 +268,7 @@ public actor SyncCoordinator {
             startPollingLoop()
             Task {
                 await self.performSyncCycle()
+                await self.refreshOpenWork()
             }
         }
     }
@@ -373,9 +279,8 @@ public actor SyncCoordinator {
         isRunning: Bool,
         isSleeping: Bool,
         isNetworkAvailable: Bool,
-        lastGmailHistoryId: String?,
-        lastGitHubETag: String?
+        lastGmailHistoryId: String?
     ) {
-        return (isRunning, isSleeping, isNetworkAvailable, lastGmailHistoryId, lastGitHubETag)
+        return (isRunning, isSleeping, isNetworkAvailable, lastGmailHistoryId)
     }
 }
