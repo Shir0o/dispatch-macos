@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/Shir0o/dispatch-macos/compare/v1.5.0...v1.6.0) (2026-11-10)
+
+
+### Features
+
+* **design:** initialize Impeccable system and polish HIG UX ([#18](https://github.com/Shir0o/dispatch-macos/issues/18)) ([1c902a0](https://github.com/Shir0o/dispatch-macos/commit/1c902a0af4b43101afd2eabc5614758b5974d684))
+
 ## [1.5.0](https://github.com/Shir0o/dispatch-macos/compare/v1.4.0...v1.5.0) (2026-11-10)
 
 
