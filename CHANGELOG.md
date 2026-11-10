@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.0](https://github.com/Shir0o/dispatch-macos/compare/v1.2.1...v1.3.0) (2026-11-09)
+
+
+### Features
+
+* add agent dispatch and locally dismissed GitHub issues ([#10](https://github.com/Shir0o/dispatch-macos/issues/10)) ([925191a](https://github.com/Shir0o/dispatch-macos/commit/925191a980e9c6cec54c3093396e3644a366f5f5))
+* **github:** backfill open work across user and org repositories ([#11](https://github.com/Shir0o/dispatch-macos/issues/11)) ([ac40845](https://github.com/Shir0o/dispatch-macos/commit/ac408455707ab982bc3e194d9cd2c459d8f22fa1))
+
 ## [1.2.1](https://github.com/Shir0o/dispatch-macos/compare/v1.2.0...v1.2.1) (2026-11-09)
 
 
