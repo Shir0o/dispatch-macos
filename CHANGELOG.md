@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/Shir0o/dispatch-macos/compare/v1.4.0...v1.5.0) (2026-11-10)
+
+
+### Features
+
+* **updates:** add Sparkle 2 in-app updates and feed automation ([#16](https://github.com/Shir0o/dispatch-macos/issues/16)) ([1b36b25](https://github.com/Shir0o/dispatch-macos/commit/1b36b25608fb919c06f523b4538e0a9922be7118))
+
 ## [1.4.0](https://github.com/Shir0o/dispatch-macos/compare/v1.3.0...v1.4.0) (2026-11-10)
 
 
