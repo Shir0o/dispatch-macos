@@ -67,7 +67,9 @@ public struct DetailPaneView: View {
             Text("No Item Selected")
                 .font(.headline)
                 .foregroundStyle(.secondary)
-            Text("Select an item from the triage stream to inspect details.")
+            Text(store.activeWorkspace == .gitHub
+                ? "Select an issue or pull request from Open Work to inspect details."
+                : "Select an email from the triage stream to inspect details.")
                 .font(.subheadline)
                 .foregroundStyle(.tertiary)
         }
@@ -130,7 +132,8 @@ public struct DetailPaneView: View {
                         .buttonStyle(.borderedProminent)
                         .tint(.purple)
                         .controlSize(.regular)
-                        .help("Format prompt to clipboard & activate terminal (⌘⇧A)")
+                        .accessibilityLabel("Dispatch to Agent")
+                        .help("Dispatch to Agent (⌘⇧A)")
 
                         Button {
                             NSWorkspace.shared.open(item.webURL)
@@ -138,6 +141,7 @@ public struct DetailPaneView: View {
                             Label("Open on GitHub", systemImage: "safari")
                         }
                         .controlSize(.small)
+                        .accessibilityLabel("Open on GitHub")
                         .help("Open on GitHub (⌘O)")
 
                         Button {
@@ -146,6 +150,7 @@ public struct DetailPaneView: View {
                             Label("Hide", systemImage: "eye.slash")
                         }
                         .controlSize(.small)
+                        .accessibilityLabel("Hide from Open Work")
                         .help("Hide from Open Work (e)")
                     }
                 }
@@ -323,11 +328,18 @@ public struct DetailPaneView: View {
                 payload: payload,
                 preferences: preferencesStore
             )
-            store.showToast(preferencesStore.preferredAgent == .none
+            let message = preferencesStore.preferredAgent == .none
                 ? "Copied issue context to clipboard"
-                : "Copied \(preferencesStore.preferredAgent.rawValue) command — paste in your terminal")
+                : "Copied \(preferencesStore.preferredAgent.rawValue) command — paste in your terminal"
+            store.showToast(message)
+            let announcement = preferencesStore.preferredAgent == .none
+                ? "Issue context copied to clipboard"
+                : "Dispatched to \(preferencesStore.preferredAgent.rawValue). Prompt copied to clipboard."
+            AccessibilityNotification.Announcement(announcement).post()
         } catch {
-            store.showToast("Dispatch error: \(error.localizedDescription)")
+            let errorMessage = "Dispatch error: \(error.localizedDescription)"
+            store.showToast(errorMessage)
+            AccessibilityNotification.Announcement(errorMessage).post()
         }
     }
 
@@ -486,12 +498,14 @@ public struct DetailPaneView: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(message)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
             )
             .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 5)
             .padding(.bottom, 24)

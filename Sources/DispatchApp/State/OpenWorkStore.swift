@@ -40,7 +40,7 @@ public final class OpenWorkStore {
     public private(set) var status = OpenWorkStatus()
 
     /// The selected item key, preserved across refreshes when possible.
-    public private(set) var selectedKey: String?
+    public var selectedKey: String?
 
     /// Repository sections built from the visible items, cached on mutation.
     public private(set) var groups: [OpenWorkGroup] = []

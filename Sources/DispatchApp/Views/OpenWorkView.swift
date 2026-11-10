@@ -16,6 +16,8 @@ public struct OpenWorkView: View {
     public init() {}
 
     public var body: some View {
+        @Bindable var bindableStore = openWorkStore
+
         VStack(spacing: 0) {
             header
 
@@ -23,13 +25,13 @@ public struct OpenWorkView: View {
                 truncationLine(truncation)
             }
 
-            Divider()
-
-            listContent
-
             if let banner = presentation.bannerText {
                 staleBanner(banner)
             }
+
+            Divider()
+
+            listContent(selection: $bindableStore.selectedKey)
         }
         .frame(minWidth: 280, idealWidth: 320, maxWidth: 420)
         .navigationTitle("Open Work")
@@ -41,6 +43,13 @@ public struct OpenWorkView: View {
                 undoBanner(key: key)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: openWorkStore.canUndo)
+        .onChange(of: openWorkStore.lastHiddenKey) { _, newKey in
+            if let newKey {
+                AccessibilityNotification.Announcement("Hidden \(newKey). Press Command-Z to undo.").post()
             }
         }
     }
@@ -191,20 +200,20 @@ public struct OpenWorkView: View {
     // MARK: - Body
 
     @ViewBuilder
-    private var listContent: some View {
+    private func listContent(selection: Binding<String?>) -> some View {
         if openWorkStore.groups.isEmpty {
             emptyState(presentation: presentation)
         } else {
-            List {
+            List(selection: selection) {
                 ForEach(openWorkStore.groups, id: \.repository) { group in
                     Section {
                         ForEach(group.items) { item in
                             OpenWorkRow(
                                 item: item,
-                                isSelected: openWorkStore.selectedKey == item.key,
                                 onOpen: { NSWorkspace.shared.open(item.webURL) },
                                 onHide: { openWorkStore.hide(key: item.key) }
                             )
+                            .tag(item.key)
                         }
                     } header: {
                         HStack {
@@ -300,10 +309,15 @@ public struct OpenWorkView: View {
 
             Spacer(minLength: 8)
 
+            if let deadline = openWorkStore.undoDeadline {
+                UndoProgressIndicator(deadline: deadline, duration: OpenWorkStore.undoWindow)
+            }
+
             Button("Undo") {
                 openWorkStore.unhide(key: key)
             }
             .controlSize(.small)
+            .help("Restore this item to Open Work (⌘Z)")
 
             Button {
                 openWorkStore.dismissUndoBanner()
@@ -314,12 +328,14 @@ public struct OpenWorkView: View {
             .buttonStyle(.borderless)
             .help("Dismiss")
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Hidden \(key). Press Command-Z to undo.")
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.25), radius: 10, x: 0, y: 4)
     }
@@ -401,7 +417,6 @@ public struct OpenWorkView: View {
 
 private struct OpenWorkRow: View {
     let item: OpenWorkItem
-    let isSelected: Bool
     let onOpen: () -> Void
     let onHide: () -> Void
 
@@ -449,10 +464,8 @@ private struct OpenWorkRow: View {
         }
         .padding(.vertical, 3)
         .contentShape(Rectangle())
-        .listRowBackground(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
         .contextMenu {
             Button("Open on GitHub", action: onOpen)
             Button("Hide from Open Work", action: onHide)
@@ -464,5 +477,32 @@ private struct OpenWorkRow: View {
         let date = item.updatedAt.formatted(date: .long, time: .shortened)
         return "\(kind): \(item.title). \(item.repository) number \(item.number). "
             + "Updated by @\(item.authorLogin) on \(date)."
+    }
+}
+
+// MARK: - Undo Progress Indicator
+
+private struct UndoProgressIndicator: View {
+    let deadline: Date
+    let duration: TimeInterval
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            let remaining = max(0, deadline.timeIntervalSince(context.date))
+            let fraction = duration > 0 ? remaining / duration : 0
+
+            ZStack {
+                Circle()
+                    .stroke(Color.secondary.opacity(0.2), lineWidth: 2)
+                    .frame(width: 14, height: 14)
+
+                Circle()
+                    .trim(from: 0, to: fraction)
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .frame(width: 14, height: 14)
+                    .rotationEffect(.degrees(-90))
+            }
+            .accessibilityHidden(true)
+        }
     }
 }

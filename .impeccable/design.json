@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-10T16:01:00Z",
+  "title": "Design System: Dispatch",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Agent Purple",
+        "canonical": "oklch(62% 0.24 305)",
+        "tonalRamp": [
+          "#3b0764",
+          "#581c87",
+          "#7e22ce",
+          "#9333ea",
+          "#a855f7",
+          "#c084fc",
+          "#e9d5ff",
+          "#faf5ff"
+        ]
+      },
+      "accent": {
+        "role": "secondary",
+        "displayName": "System Accent Blue",
+        "canonical": "oklch(58% 0.22 255)",
+        "tonalRamp": [
+          "#172554",
+          "#1e3a8a",
+          "#1d4ed8",
+          "#2563eb",
+          "#3b82f6",
+          "#60a5fa",
+          "#bfdbfe",
+          "#eff6ff"
+        ]
+      },
+      "surface-background": {
+        "role": "neutral",
+        "displayName": "Window Canvas",
+        "canonical": "oklch(22% 0.005 260)",
+        "tonalRamp": [
+          "#121212",
+          "#181818",
+          "#1e1e1e",
+          "#242424",
+          "#2d2d2d",
+          "#383838",
+          "#4a4a4a",
+          "#f5f5f7"
+        ]
+      },
+      "text-primary": {
+        "role": "neutral",
+        "displayName": "Text Primary",
+        "canonical": "oklch(98% 0 0)",
+        "tonalRamp": [
+          "#000000",
+          "#1f2937",
+          "#4b5563",
+          "#6b7280",
+          "#9ca3af",
+          "#d1d5db",
+          "#f3f4f6",
+          "#ffffff"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display Hero",
+        "purpose": "Empty state hero glyphs and onboarding headers."
+      },
+      "headline": {
+        "displayName": "Section Headline",
+        "purpose": "Navigation headers, stream titles, and panel sections."
+      },
+      "title": {
+        "displayName": "Detail Title",
+        "purpose": "Email subject lines and GitHub issue titles."
+      },
+      "body": {
+        "displayName": "Stream & Content Body",
+        "purpose": "Item titles, sender names, markdown comments, and message body."
+      },
+      "label": {
+        "displayName": "Mono Label",
+        "purpose": "Issue numbers, shortcut indicators, and CLI agent commands."
+      }
+    },
+    "shadows": [
+      {
+        "name": "floating-banner",
+        "value": "0 10px 24px rgba(0, 0, 0, 0.25)",
+        "purpose": "Detached toast notifications and undo overlays."
+      },
+      {
+        "name": "welcome-glow",
+        "value": "0 6px 12px rgba(0, 122, 255, 0.35)",
+        "purpose": "Ambient accent glow on onboarding brand icon."
+      }
+    ],
+    "motion": [
+      {
+        "name": "spring-snappy",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "SwiftUI spring animation for toasts and row selection changes."
+      }
+    ],
+    "breakpoints": [
+      { "name": "sidebar-min", "value": "200px" },
+      { "name": "stream-min", "value": "280px" },
+      { "name": "detail-min", "value": "400px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Agent Dispatch Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Primary action in GitHub detail view to format prompt and open local AI coding agent.",
+      "html": "<button class=\"ds-btn-dispatch\"><svg class=\"ds-btn-icon\" viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"currentColor\"><path d=\"M12 2l2.4 7.2h7.6l-6.2 4.5 2.4 7.3-6.2-4.5-6.2 4.5 2.4-7.3-6.2-4.5h7.6z\"/></svg><span>Dispatch to Agent</span></button>",
+      "css": ".ds-btn-dispatch { display: inline-flex; align-items: center; gap: 6px; background: #a855f7; color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; font-size: 13px; font-weight: 500; padding: 6px 14px; border-radius: 6px; border: none; cursor: pointer; transition: background 0.15s ease; } .ds-btn-dispatch:hover { background: #9333ea; } .ds-btn-dispatch:active { background: #7e22ce; } .ds-btn-icon { fill: currentColor; }"
+    },
+    {
+      "name": "Action Icon Button",
+      "kind": "button",
+      "refersTo": "button-subtle",
+      "description": "Compact icon button for secondary triage actions (Archive, Star, Trash, Open in Safari).",
+      "html": "<button class=\"ds-btn-subtle\"><svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M21 8v13H3V8M1 3h22v5H1zM10 12h4\"/></svg></button>",
+      "css": ".ds-btn-subtle { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; background: rgba(255, 255, 255, 0.08); color: #e5e7eb; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.12); cursor: pointer; } .ds-btn-subtle:hover { background: rgba(255, 255, 255, 0.14); }"
+    },
+    {
+      "name": "Unread Count Badge",
+      "kind": "chip",
+      "refersTo": "badge-unread",
+      "description": "High-visibility unread count indicator for the active Gmail stream.",
+      "html": "<span class=\"ds-badge-unread\">14</span>",
+      "css": ".ds-badge-unread { display: inline-block; background: #007aff; color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 9999px; min-width: 18px; text-align: center; }"
+    },
+    {
+      "name": "Pull Request Tag",
+      "kind": "chip",
+      "refersTo": "badge-pr",
+      "description": "Compact indicator distinguishing pull requests from regular issues in Open Work.",
+      "html": "<span class=\"ds-badge-pr\">PR</span>",
+      "css": ".ds-badge-pr { display: inline-block; background: rgba(168, 85, 247, 0.15); color: #a855f7; font-family: ui-monospace, Menlo, Monaco, monospace; font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 3px; letter-spacing: 0.02em; }"
+    },
+    {
+      "name": "Floating Undo Banner",
+      "kind": "card",
+      "refersTo": "toast-banner",
+      "description": "Transient 6-second undo toast shown at the bottom of the stream when an item is hidden.",
+      "html": "<div class=\"ds-undo-banner\"><svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"#9ca3af\" stroke-width=\"2\"><path d=\"M17.94 17.94A10 10 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24M1 1l22 22\"/></svg><span class=\"ds-undo-text\">Hidden Shir0o/dispatch-macos#42.</span><button class=\"ds-undo-btn\">Undo</button></div>",
+      "css": ".ds-undo-banner { display: inline-flex; align-items: center; gap: 10px; background: rgba(30, 30, 30, 0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 10px; padding: 8px 14px; box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25); color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; font-size: 13px; } .ds-undo-text { color: #f3f4f6; } .ds-undo-btn { background: rgba(255, 255, 255, 0.15); color: #ffffff; border: none; border-radius: 4px; padding: 3px 8px; font-size: 12px; font-weight: 500; cursor: pointer; } .ds-undo-btn:hover { background: rgba(255, 255, 255, 0.25); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Keyboard-Centric Cockpit",
+    "overview": "Dispatch is an uncompromising native macOS utility engineered for extreme developer responsiveness and zero latency. It strips away the ambient noise, electron container bloat, and visual excess of modern web software in favor of pure desktop utility. Operating as a calm, disciplined instrument panel, Dispatch enables rapid-fire triage across Gmail and GitHub with instantaneous sub-50ms feedback, low idle memory consumption (<50 MB), and ergonomic keyboard chords.\n\nThe aesthetic adheres strictly to macOS Human Interface Guidelines (HIG) while celebrating the precision of modern developer tools. Translucent vibrant materials (.bar, .ultraThinMaterial, NSVisualEffectView) integrate seamlessly into macOS Sonoma and Sequoia, creating an authentic desktop silhouette. Rich status signals—vibrant purple for GitHub Pull Requests and Agent actions, emerald green for issues and inbox-zero states, energetic red for Gmail mailboxes, and amber for alerts—stand out with razor-sharp clarity against subdued dark and light system backdrops.",
+    "keyCharacteristics": [
+      "Authentic macOS Pedigree: Employs native NavigationSplitView three-column layouts, system vibrancy materials, system SF Pro and SF Mono type hierarchies, and standard macOS control sizing.",
+      "Utilitarian & Keyboard-First: Interfaces are designed around visible keyboard affordances and high-density information display without visual clutter.",
+      "Vibrant Status Semantics: Color is applied with deliberate restraint to convey domain meaning (unread counts, PR vs Issue status, agent execution states).",
+      "Sub-50ms Density: Compact row heights, crisp borders, and balanced whitespace provide maximum contextual awareness without cognitive fatigue."
+    ],
+    "rules": [
+      {
+        "name": "The Rarity of Red Rule",
+        "body": "Red (#ef4444) is exclusively reserved for the Gmail mailbox icon and catastrophic authentication errors. It is never used for ordinary dismissals or neutral status tags.",
+        "section": "colors"
+      },
+      {
+        "name": "The Semantic Sparkle Rule",
+        "body": "Purple (#a855f7) always signals GitHub Pull Requests or local AI Agent integration (Cmd+Shift+A). When the user sees purple, an agent or PR action is available.",
+        "section": "colors"
+      },
+      {
+        "name": "The Monospaced Identity Rule",
+        "body": "Issue identifiers (#402), keyboard shortcuts (⌘⇧A), and terminal command strings must always be rendered in SF Mono or with .monospacedDigit() to preserve column scanability.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-By-Default Rule",
+        "body": "Content surfaces, list rows, and detail panes remain completely flat at rest. Depth is reserved solely for floating transient overlays (toasts, undo bars, and popovers).",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do preserve sub-50ms UI feedback by relying on native AppKit/SwiftUI controls instead of web wrappers.",
+      "Do format all keyboard shortcut annotations with standard macOS symbols (⌘, ⇧, ⌥).",
+      "Do use continuous corner curvature (style: .continuous) for all rounded rectangles.",
+      "Do strictly separate Gmail messages from GitHub open work items across isolated stream views.",
+      "Do provide non-destructive local hide (e) and immediate visible Undo affordances for triage actions."
+    ],
+    "donts": [
+      "Don't introduce heavy custom drop shadows to cards or list rows; rely on native macOS system materials.",
+      "Don't use custom web fonts; San Francisco Pro and San Francisco Mono are mandatory.",
+      "Don't mutate public GitHub status or close issues during triage.",
+      "Don't allow JavaScript execution inside detail web views (allowsContentJavaScript = false)."
+    ]
+  }
+}
