@@ -79,6 +79,13 @@ struct DispatchApp: App {
                 .environment(triageStore)
                 .environment(openWorkStore)
         }
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    UpdateController.shared.checkForUpdates()
+                }
+            }
+        }
     }
 
     // MARK: - Composition Root Wiring

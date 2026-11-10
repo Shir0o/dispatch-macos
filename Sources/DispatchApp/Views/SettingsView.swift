@@ -46,6 +46,11 @@ public struct SettingsView: View {
                 .tabItem {
                     Label("Agent Dispatch", systemImage: "sparkles")
                 }
+
+            updatesTab
+                .tabItem {
+                    Label("Updates", systemImage: "arrow.triangle.2.circlepath")
+                }
         }
         .frame(width: 540, height: 520)
         .padding(20)
@@ -367,5 +372,29 @@ public struct SettingsView: View {
         openWorkStore.clear()
         tempGitHubPAT = ""
         gitHubStatus = "GitHub token removed"
+    }
+
+    // MARK: - Updates Tab
+
+    private var updatesTab: some View {
+        Form {
+            Section(header: Text("Software Updates").font(.headline)) {
+                let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+                let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+
+                HStack {
+                    Text("Current Version")
+                    Spacer()
+                    Text("v\(currentVersion) (\(buildNumber))")
+                        .foregroundStyle(.secondary)
+                }
+
+                Button("Check for Updates Now…") {
+                    UpdateController.shared.checkForUpdates()
+                }
+                .padding(.top, 4)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
