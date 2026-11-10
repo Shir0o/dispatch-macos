@@ -33,5 +33,11 @@
 			</array>
 		</dict>
 	</array>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/Shir0o/dispatch-macos/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>CDq5uMjMwj9zaRN2l6JF7Ll2nHh4l7Y/K/pL4LAIKy0=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 </dict>
 </plist>

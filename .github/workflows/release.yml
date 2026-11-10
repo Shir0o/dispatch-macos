@@ -23,6 +23,7 @@ name: Release
 #   APPLE_ID                    Apple ID used for notarization
 #   APPLE_APP_PASSWORD          app-specific password for that Apple ID
 #   APPLE_TEAM_ID               Apple Developer Team ID
+#   SPARKLE_PRIVATE_KEY         EdDSA private key (base64) for Sparkle update feed
 #
 # Without those secrets the DMG is ad-hoc signed and users must clear the
 # quarantine attribute on first launch (documented in the release notes).
@@ -96,6 +97,7 @@ jobs:
     env:
       HAS_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE != '' }}
       HAS_NOTARY_CREDENTIALS: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+      HAS_SPARKLE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY != '' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -431,6 +433,60 @@ jobs:
           fi
 
           echo "Published https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+
+      - name: Generate Sparkle appcast and update feed
+        if: env.HAS_SPARKLE_KEY == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          DMG_PATH: ${{ steps.dmg.outputs.path }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          APPCAST_DIR="${RUNNER_TEMP}/appcast"
+          mkdir -p "${APPCAST_DIR}"
+
+          # Copy current repository appcast.xml if it exists
+          if [ -f "appcast.xml" ]; then
+            cp "appcast.xml" "${APPCAST_DIR}/appcast.xml"
+          fi
+
+          # Copy the DMG into the directory for generate_appcast
+          cp "${DMG_PATH}" "${APPCAST_DIR}/"
+
+          # Locate generate_appcast from the Sparkle artifact
+          GEN_APPCAST="$(find .build -name "generate_appcast" -type f -perm +111 | head -n 1)"
+          if [ -z "${GEN_APPCAST}" ]; then
+            echo "::warning::generate_appcast tool not found in .build, skipping appcast generation"
+            exit 0
+          fi
+
+          DOWNLOAD_URL_PREFIX="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/"
+          echo "${SPARKLE_PRIVATE_KEY}" | "${GEN_APPCAST}" \
+            --ed-key-file - \
+            --download-url-prefix "${DOWNLOAD_URL_PREFIX}" \
+            -o "${APPCAST_DIR}/appcast.xml" \
+            "${APPCAST_DIR}"
+
+          cp "${APPCAST_DIR}/appcast.xml" "appcast.xml"
+
+          # Upload appcast.xml to the GitHub Release
+          gh release upload "${TAG}" "appcast.xml" --clobber
+
+          # Commit updated appcast.xml back to the main branch
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          git add appcast.xml
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): update appcast.xml for ${TAG} [skip ci]"
+            git push origin main
+            echo "Updated appcast.xml on main"
+          else
+            echo "appcast.xml is unchanged"
+          fi
 
       - name: Write workflow summary
         if: always()

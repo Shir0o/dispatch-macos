@@ -47,11 +47,12 @@ swift build "${BUILD_ARGS[@]}"
 
 CONTENTS_DIR="${APP_BUNDLE}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
+FRAMEWORKS_DIR="${CONTENTS_DIR}/Frameworks"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
 
 echo "Assembling ${APP_BUNDLE} structure..."
 rm -rf "${APP_BUNDLE}"
-mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
+mkdir -p "${MACOS_DIR}" "${FRAMEWORKS_DIR}" "${RESOURCES_DIR}"
 
 # Locate the compiled release binary (SwiftPM writes universal products to
 # .build/apple/Products/<Configuration>, so ask SwiftPM for the real path).
@@ -66,6 +67,18 @@ fi
 
 cp "${BIN_PATH}" "${MACOS_DIR}/Dispatch"
 chmod +x "${MACOS_DIR}/Dispatch"
+
+# Ensure @executable_path/../Frameworks is in rpath so Sparkle.framework resolves
+if ! otool -l "${MACOS_DIR}/Dispatch" | grep -q "@executable_path/../Frameworks"; then
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "${MACOS_DIR}/Dispatch"
+fi
+
+# Locate and copy Sparkle.framework into Contents/Frameworks
+SPARKLE_FRAMEWORK="$(find .build -name "Sparkle.framework" -type d | head -n 1)"
+if [ -n "${SPARKLE_FRAMEWORK}" ] && [ -d "${SPARKLE_FRAMEWORK}" ]; then
+    echo "Embedding Sparkle.framework from ${SPARKLE_FRAMEWORK}..."
+    cp -R "${SPARKLE_FRAMEWORK}" "${FRAMEWORKS_DIR}/"
+fi
 
 cp "Info.plist" "${CONTENTS_DIR}/Info.plist"
 cp "Assets/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
