@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/Shir0o/dispatch-macos/compare/v1.3.0...v1.4.0) (2026-11-10)
+
+
+### Features
+
+* **github:** replace backfill with Open Work ([#14](https://github.com/Shir0o/dispatch-macos/issues/14)) ([2d16b42](https://github.com/Shir0o/dispatch-macos/commit/2d16b4255cfc993114991da14aa3f5b6d05d4759))
+
 ## [1.3.0](https://github.com/Shir0o/dispatch-macos/compare/v1.2.1...v1.3.0) (2026-11-09)
 
 
