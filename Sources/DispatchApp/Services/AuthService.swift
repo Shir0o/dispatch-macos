@@ -232,6 +232,85 @@ public actor AuthService {
         try deleteKeychainValue(key: Self.gitHubPATKey)
     }
 
+    // MARK: - Google Credential
+
+    /// Reads the stored Google token set, including the recorded expiry.
+    public func readGoogleCredential() throws -> GoogleCredential {
+        let accessToken = try readKeychainValue(key: Self.googleAccessTokenKey)
+        let refreshToken = try readKeychainValue(key: Self.googleRefreshTokenKey)
+        let expiryString = try readKeychainValue(key: Self.googleTokenExpiryKey)
+        let expiry = expiryString.flatMap { ISO8601DateFormatter().date(from: $0) }
+        return GoogleCredential(accessToken: accessToken, refreshToken: refreshToken, expiry: expiry)
+    }
+
+    /// Persists one token response and returns the resulting credential.
+    @discardableResult
+    func saveGoogleTokenResponse(
+        accessToken: String,
+        refreshToken: String?,
+        expiresIn: Int
+    ) throws -> GoogleCredential {
+        try saveKeychainValue(key: Self.googleAccessTokenKey, value: accessToken)
+        if let refreshToken {
+            try saveKeychainValue(key: Self.googleRefreshTokenKey, value: refreshToken)
+        }
+
+        let expiry = Date().addingTimeInterval(TimeInterval(expiresIn))
+        try saveKeychainValue(
+            key: Self.googleTokenExpiryKey,
+            value: ISO8601DateFormatter().string(from: expiry)
+        )
+
+        return GoogleCredential(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            expiry: expiry
+        )
+    }
+
+    // MARK: - Credential Availability
+
+    /// Presence and readability of the Google refresh token.
+    ///
+    /// Reads attributes only, so it never prompts for the item's secret.
+    public nonisolated static func googleCredentialAvailability() -> CredentialAvailability {
+        availability(for: googleRefreshTokenKey)
+    }
+
+    /// Presence and readability of the GitHub PAT.
+    public nonisolated static func gitHubCredentialAvailability() -> CredentialAvailability {
+        availability(for: gitHubPATKey)
+    }
+
+    private nonisolated static func availability(for account: String) -> CredentialAvailability {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: account,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+
+        switch status {
+        case errSecSuccess:
+            return .available
+        case errSecItemNotFound:
+            return .missing
+        case errSecInteractionNotAllowed, errSecAuthFailed:
+            return .inaccessible(
+                message: "macOS locked this Keychain item to the app that saved it. "
+                    + "Sign in again to store a fresh copy."
+            )
+        default:
+            let message = SecCopyErrorMessageString(status, nil) as String?
+                ?? "Keychain error \(status)."
+            return .inaccessible(message: message)
+        }
+    }
+
     // MARK: - PKCE Generation
 
     public func generateCodeVerifier() -> String {
@@ -397,14 +476,11 @@ public actor AuthService {
             throw AuthError.decodingFailed
         }
 
-        try saveKeychainValue(key: Self.googleAccessTokenKey, value: tokenResponse.access_token)
-        if let refresh = tokenResponse.refresh_token {
-            try saveKeychainValue(key: Self.googleRefreshTokenKey, value: refresh)
-        }
-
-        let expiryDate = Date().addingTimeInterval(TimeInterval(tokenResponse.expires_in))
-        let expiryString = ISO8601DateFormatter().string(from: expiryDate)
-        try saveKeychainValue(key: Self.googleTokenExpiryKey, value: expiryString)
+        try saveGoogleTokenResponse(
+            accessToken: tokenResponse.access_token,
+            refreshToken: tokenResponse.refresh_token,
+            expiresIn: tokenResponse.expires_in
+        )
 
         return (
             accessToken: tokenResponse.access_token,
@@ -414,6 +490,22 @@ public actor AuthService {
     }
 
     public func refreshGoogleToken(clientId: String) async throws -> String {
+        let credential = try await refreshGoogleCredential(clientId: clientId)
+        guard let accessToken = credential.accessToken else {
+            throw AuthError.missingAccessToken
+        }
+        return accessToken
+    }
+
+    /// Exchanges the stored refresh token and returns the new credential.
+    ///
+    /// `GoogleTokenProvider` consumes this so expiry is recorded in one place.
+    public func refreshGoogleCredential(clientId: String) async throws -> GoogleCredential {
+        let trimmedClientId = clientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedClientId.isEmpty, trimmedClientId.hasSuffix(".apps.googleusercontent.com") else {
+            throw AuthError.invalidClientId
+        }
+
         guard let refreshToken = try readKeychainValue(key: Self.googleRefreshTokenKey) else {
             throw AuthError.missingRefreshToken
         }
@@ -427,7 +519,7 @@ public actor AuthService {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
 
         let parameters: [String: String] = [
-            "client_id": clientId,
+            "client_id": trimmedClientId,
             "refresh_token": refreshToken,
             "grant_type": "refresh_token"
         ]
@@ -456,16 +548,11 @@ public actor AuthService {
             throw AuthError.decodingFailed
         }
 
-        try saveKeychainValue(key: Self.googleAccessTokenKey, value: refreshResponse.access_token)
-        if let newRefresh = refreshResponse.refresh_token {
-            try saveKeychainValue(key: Self.googleRefreshTokenKey, value: newRefresh)
-        }
-
-        let expiryDate = Date().addingTimeInterval(TimeInterval(refreshResponse.expires_in))
-        let expiryString = ISO8601DateFormatter().string(from: expiryDate)
-        try saveKeychainValue(key: Self.googleTokenExpiryKey, value: expiryString)
-
-        return refreshResponse.access_token
+        return try saveGoogleTokenResponse(
+            accessToken: refreshResponse.access_token,
+            refreshToken: refreshResponse.refresh_token,
+            expiresIn: refreshResponse.expires_in
+        )
     }
 
     // MARK: - GitHub Authentication
@@ -473,14 +560,12 @@ public actor AuthService {
     /// Presence check used by the composition root and Settings before any view
     /// body runs. Reads the Keychain directly; it never throws.
     public nonisolated static func hasGitHubPAT() -> Bool {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: gitHubPATKey,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
+        gitHubCredentialAvailability().isUsable
+    }
 
-        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+    /// True when a readable Google refresh token is stored.
+    public nonisolated static func hasGoogleRefreshToken() -> Bool {
+        googleCredentialAvailability().isUsable
     }
 
     /// Writes a PAT to the Keychain with `SecItemAdd`/`SecItemUpdate` and

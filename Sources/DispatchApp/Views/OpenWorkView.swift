@@ -108,17 +108,17 @@ public struct OpenWorkView: View {
 
     @ViewBuilder
     private func headerControls(presentation: OpenWorkPresentation) -> some View {
+        let action = presentation.action
+
         HStack(spacing: 8) {
-            if openWorkStore.isConfigured, presentation.action.kind != .openSettings {
-                if presentation.action.kind == .refresh {
-                    Button {
-                        perform(action: presentation.action)
-                    } label: {
-                        Label(presentation.action.label, systemImage: "arrow.clockwise")
-                    }
-                    .disabled(!presentation.action.isEnabled)
-                    .help("Fetch Open Work again")
+            if openWorkStore.isConfigured, action.kind != .openSettings {
+                if action.kind == .refresh || isRetry(action.kind) {
+                    // Refresh and Retry are the same operation; showing both
+                    // produced two identical circular-arrow buttons.
+                    actionButton(action)
                 } else {
+                    actionButton(action)
+
                     Button {
                         Task { await openWorkStore.refresh() }
                     } label: {
@@ -129,25 +129,14 @@ public struct OpenWorkView: View {
                     }
                     .disabled(openWorkStore.status.phase == .running)
                     .help("Fetch Open Work again")
-
-                    Button {
-                        perform(action: presentation.action)
-                    } label: {
-                        Label(
-                            presentation.action.label,
-                            systemImage: symbol(for: presentation.action.kind)
-                        )
-                    }
-                    .disabled(!presentation.action.isEnabled)
-                    .help(actionHelp(for: presentation.action))
                 }
             } else {
                 Button {
-                    perform(action: presentation.action)
+                    perform(action: action)
                 } label: {
-                    Label(presentation.action.label, systemImage: "gearshape")
+                    Label(action.label, systemImage: "gearshape")
                 }
-                .disabled(!presentation.action.isEnabled)
+                .disabled(!action.isEnabled)
             }
 
             Button {
@@ -167,6 +156,21 @@ public struct OpenWorkView: View {
 
             hiddenKeysMenu
         }
+    }
+
+    private func actionButton(_ action: PresentationAction) -> some View {
+        Button {
+            perform(action: action)
+        } label: {
+            Label(action.label, systemImage: symbol(for: action.kind))
+        }
+        .disabled(!action.isEnabled)
+        .help(actionHelp(for: action))
+    }
+
+    private func isRetry(_ kind: OpenWorkAction) -> Bool {
+        if case .retry = kind { return true }
+        return false
     }
 
     private var hiddenKeysMenu: some View {
@@ -286,12 +290,6 @@ public struct OpenWorkView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 4)
-
-            Button(presentation.action.label) {
-                perform(action: presentation.action)
-            }
-            .controlSize(.small)
-            .disabled(!presentation.action.isEnabled)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)

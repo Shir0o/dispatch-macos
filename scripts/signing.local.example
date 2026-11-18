@@ -1,9 +1,12 @@
-# Copy this file to signing.local to sign local builds with your own
+# Copy this file to signing.local to sign local builds with a specific
 # certificate. The copy is git-ignored and must not be committed.
 #
-# Without it, package-app.sh signs ad-hoc, so macOS treats every rebuild as a
-# different application and asks for file and network permissions again. The
-# release workflow passes its own identity, so this file never affects releases.
+# When this file is absent, package-app.sh picks your local "Developer ID
+# Application" identity, then "Apple Development", and only falls back to
+# ad-hoc when neither exists. A stable identity matters beyond Gatekeeper:
+# macOS binds Keychain items to the code signature, so ad-hoc builds lose the
+# GitHub PAT and Google session after every update. The release workflow passes
+# its own identity, so this file never affects releases.
 #
 # List your signing identities with:
 #

@@ -58,7 +58,7 @@ public struct MainSplitView: View {
     }
 
     private var isFirstLaunchEmptyState: Bool {
-        preferencesStore.googleClientId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !preferencesStore.isGoogleConnected &&
         !preferencesStore.isGitHubConfigured &&
         store.gmailItems.isEmpty
     }

@@ -33,6 +33,23 @@ if [ -z "${SIGN_IDENTITY:-}" ] && [ -f "${SCRIPT_DIR}/signing.local" ]; then
     . "${SCRIPT_DIR}/signing.local"
 fi
 
+# Fall back to a local Developer ID (or Apple Development) identity instead of
+# ad-hoc. macOS ties Keychain items to the signing identity: an ad-hoc build's
+# designated requirement is its cdhash, which changes on every build, so the
+# GitHub PAT and Google session look deleted after each update. A team-based
+# identity keeps the Keychain access group stable across rebuilds.
+if [ -z "${SIGN_IDENTITY:-}" ]; then
+    SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+        | awk -F '"' '/Developer ID Application/ { print $2; exit }')"
+    if [ -z "${SIGN_IDENTITY}" ]; then
+        SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+            | awk -F '"' '/Apple Development/ { print $2; exit }')"
+    fi
+    if [ -n "${SIGN_IDENTITY}" ]; then
+        echo "No SIGN_IDENTITY provided; using '${SIGN_IDENTITY}' so Keychain credentials survive rebuilds."
+    fi
+fi
+
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
 BUILD_ARGS=(-c "${CONFIGURATION}")
@@ -95,6 +112,8 @@ if [ -n "${BUILD_NUMBER}" ]; then
 fi
 
 if [ "${SIGN_IDENTITY}" = "-" ]; then
+    echo "warning: signing ad-hoc. macOS treats every build as a different app, so Keychain credentials and permissions do not carry over." >&2
+    echo "         Set SIGN_IDENTITY (or add scripts/signing.local) to a Developer ID or Apple Development identity." >&2
     echo "Signing ${APP_BUNDLE} ad-hoc with entitlements..."
     codesign --force --deep --sign - --entitlements Dispatch.entitlements "${APP_BUNDLE}"
 else

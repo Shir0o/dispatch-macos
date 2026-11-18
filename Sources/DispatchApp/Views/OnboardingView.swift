@@ -46,9 +46,9 @@ public struct OnboardingView: View {
                     title: "Gmail Inbox",
                     icon: "envelope.fill",
                     iconColor: .red,
-                    description: "Connect via Google Cloud OAuth with PKCE and sandboxed reverse-DNS redirect.",
+                    description: "Sign in with a Google OAuth iOS client ID to load your inbox.",
                     actionTitle: "Configure Gmail",
-                    isConnected: !preferencesStore.googleClientId.isEmpty
+                    isConnected: preferencesStore.isGoogleConnected
                 )
 
                 accountCard(

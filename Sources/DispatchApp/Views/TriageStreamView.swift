@@ -4,6 +4,8 @@ import SwiftUI
 /// author avatars, relative timestamps, snippets, and workflow badges.
 public struct TriageStreamView: View {
     @Environment(TriageStore.self) private var store
+    @Environment(PreferencesStore.self) private var preferencesStore
+    @Environment(\.openSettings) private var openSettings
 
     public init() {}
 
@@ -35,18 +37,34 @@ public struct TriageStreamView: View {
     /// Gmail-only after workspace routing. Open Work has its own empty states.
     @ViewBuilder
     private var emptyStateView: some View {
+        let state = GmailEmptyState.make(
+            isConnected: preferencesStore.isGoogleConnected,
+            syncState: store.gmailSyncState
+        )
+
         VStack(spacing: 12) {
             Spacer()
-            Image(systemName: "envelope.open")
+            Image(systemName: state.symbol)
                 .font(.system(size: 44, weight: .light))
-                .foregroundStyle(.green)
+                .foregroundStyle(state.offersSettings ? Color.orange : Color.green)
 
-            Text("Inbox Zero")
+            Text(state.title)
                 .font(.headline)
 
-            Text("No unread messages in your Gmail inbox.")
+            Text(state.message)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+
+            if state.offersSettings {
+                Button("Open Settings") {
+                    openSettings()
+                }
+                .controlSize(.small)
+                .padding(.top, 4)
+            }
+
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

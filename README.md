@@ -19,8 +19,12 @@ Grab the latest build from [GitHub Releases](https://github.com/Shir0o/dispatch-
 
 Requires macOS 14 (Sonoma) or newer. Releases are universal builds for Apple silicon and Intel Macs.
 
-> [!NOTE]
-> Releases are currently ad-hoc signed (not notarized). If macOS blocks the first launch, right-click the app and choose **Open**, or clear the quarantine flag with `xattr -dr com.apple.quarantine /Applications/Dispatch.app`.
+> [!IMPORTANT]
+> **First launch.** A release built with the repository's Developer ID + notarization secrets opens normally. If the release notes say the build is ad-hoc signed, macOS Gatekeeper blocks the first launch: right-click **Dispatch** in Applications and choose **Open**, or run `xattr -dr com.apple.quarantine /Applications/Dispatch.app`.
+>
+> **Why credentials did not survive an update.** macOS ties a Keychain item to the code signature that created it. An ad-hoc build's identity is its `cdhash`, which changes on every download, so macOS treats the new version as a different app and refuses the old GitHub PAT and Google session. With a Developer ID signed build (or a local Apple Development identity) the identity is stable and credentials carry across updates. If you are upgrading from an ad-hoc build, sign in once more; the new entry survives every later signed update.
+>
+> Maintainers: configure the release secrets listed in [Signing and notarization](#signing-and-notarization) to publish notarized builds that need no approval.
 
 ---
 
@@ -198,8 +202,8 @@ dispatch-macos/
 
 * **Operating System:** macOS 14.0 (Sonoma) or newer.
 * **Toolchain:** Xcode 15+ or Swift 6.0 toolchain.
-* **Google Cloud Project (for Personal OAuth):** A standard Google Cloud Console Desktop OAuth Client ID (for personal Gmail REST API access).
-* **GitHub Personal Access Token:** Classic token with `repo` read scope. Fine-grained tokens work, but may return a smaller result set scoped to what the token can read.
+* **Google Cloud Project (for Personal OAuth):** An OAuth client ID of type **iOS** (not Web or Desktop) with the Gmail API enabled, and your Gmail address added as a test user on the OAuth consent screen.
+* **GitHub Personal Access Token:** A **classic** token with the `repo` scope. Open Work's involvement search needs `repo` to include private repositories; fine-grained tokens and `public_repo` return a smaller result set.
 
 ### Build and Package
 
@@ -220,7 +224,31 @@ UNIVERSAL=1 ./scripts/package-app.sh
 ./scripts/create-dmg.sh
 ```
 
-`package-app.sh` accepts `VERSION`, `BUILD_NUMBER`, `UNIVERSAL=1`, `BUILD_DIR`, and `SIGN_IDENTITY` environment overrides. For local signing, copy `scripts/signing.local.example` to `scripts/signing.local` and set your certificate identity there; that file is git-ignored, and without it builds stay ad-hoc signed like CI. `create-dmg.sh` writes a compressed `Dispatch-<version>.dmg` next to the app bundle, with an `Applications` shortcut for drag-to-install.
+`package-app.sh` accepts `VERSION`, `BUILD_NUMBER`, `UNIVERSAL=1`, `BUILD_DIR`, and `SIGN_IDENTITY` environment overrides. When `SIGN_IDENTITY` is unset it uses your local **Developer ID Application** identity, then **Apple Development**, and only falls back to ad-hoc when neither exists. A stable identity matters beyond Gatekeeper: macOS binds Keychain items to it, so ad-hoc builds lose the GitHub PAT and Google session on every update. `create-dmg.sh` writes a compressed `Dispatch-<version>.dmg` next to the app bundle, with an `Applications` shortcut for drag-to-install.
+
+### Signing and notarization
+
+Notarized releases open without the right-click dance. Add these repository secrets before cutting a release:
+
+| Secret | Value |
+| --- | --- |
+| `MACOS_CERTIFICATE` | base64 of your **Developer ID Application** `.p12` (`base64 -i cert.p12`) |
+| `MACOS_CERTIFICATE_PASSWORD` | the `.p12` password |
+| `KEYCHAIN_PASSWORD` | any random string for the temporary CI keychain |
+| `APPLE_ID` | the Apple ID enrolled in the Developer Program |
+| `APPLE_APP_PASSWORD` | an app-specific password for that Apple ID |
+| `APPLE_TEAM_ID` | your 10-character Team ID |
+| `SPARKLE_PRIVATE_KEY` | EdDSA private key for the update feed |
+
+`release.yml` detects the certificate and notary credentials and, when both are present, signs with the hardened runtime, notarizes the app and the DMG, staples the tickets, and verifies with `spctl`. Without them it still publishes, but the notes say the build is ad-hoc and users must approve the first launch.
+
+To fix an existing local install, rebuild and re-sign with your own identity, then replace `/Applications/Dispatch.app`:
+
+```bash
+./scripts/package-app.sh
+codesign --verify --deep --strict build/Dispatch.app
+spctl -a -vvv -t exec build/Dispatch.app   # rejected until the build is notarized
+```
 
 ---
 
