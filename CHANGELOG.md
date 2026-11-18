@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/Shir0o/dispatch-macos/compare/v1.6.0...v1.6.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* persist credentials and recover Gmail/GitHub sessions ([#21](https://github.com/Shir0o/dispatch-macos/issues/21)) ([335e215](https://github.com/Shir0o/dispatch-macos/commit/335e215cbb5277adce7c8ba5fcc1f2b91d8126a4))
+
 ## [1.6.0](https://github.com/Shir0o/dispatch-macos/compare/v1.5.0...v1.6.0) (2026-11-10)
 
 
