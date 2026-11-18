@@ -24,6 +24,10 @@ public actor SyncCoordinator {
     // Update callback closure
     public var onItemsUpdated: (@Sendable ([TriageItem], TriageSource) -> Void)?
 
+    /// Called after every Gmail sync attempt so the UI can distinguish
+    /// "inbox empty" from "sign-in expired".
+    public var onGmailSyncState: (@Sendable (GmailSyncState) -> Void)?
+
     // Stream continuations for consumers subscribing via AsyncStream
     private var streamContinuations: [UUID: AsyncStream<([TriageItem], TriageSource)>.Continuation] = [:]
     private var itemStreamContinuations: [UUID: AsyncStream<[TriageItem]>.Continuation] = [:]
@@ -98,6 +102,10 @@ public actor SyncCoordinator {
         self.onItemsUpdated = callback
     }
 
+    public func setOnGmailSyncState(_ callback: (@Sendable (GmailSyncState) -> Void)?) {
+        self.onGmailSyncState = callback
+    }
+
     // MARK: - AsyncStream Publishers
 
     public func makeItemsStream() -> AsyncStream<[TriageItem]> {
@@ -170,6 +178,7 @@ public actor SyncCoordinator {
                     self.lastGmailHistoryId = reconciliation.historyId ?? history.newHistoryId
                     emitUpdate(items: reconciliation.items, source: .gmail)
                 }
+                reportGmailState(.connected)
             } catch let error as GmailError where error == .invalidHistoryId {
                 // HTTP 404 INVALID_HISTORY_ID: Clear stale ID and perform full inbox reconciliation
                 self.lastGmailHistoryId = nil
@@ -177,11 +186,13 @@ public actor SyncCoordinator {
                     let reconciliation = try await gmailService.fetchInboxThreads(pageToken: nil)
                     self.lastGmailHistoryId = reconciliation.historyId
                     emitUpdate(items: reconciliation.items, source: .gmail)
+                    reportGmailState(.connected)
                 } catch {
-                    // Backoff silently until next sync cycle
+                    reportGmailState(Self.gmailState(for: error))
                 }
             } catch {
-                // Network or auth error; will retry on next polling loop
+                // Network or auth error; surface it instead of silently retrying.
+                reportGmailState(Self.gmailState(for: error))
             }
         } else {
             // Cold bootstrap
@@ -189,10 +200,63 @@ public actor SyncCoordinator {
                 let initial = try await gmailService.fetchInboxThreads(pageToken: nil)
                 self.lastGmailHistoryId = initial.historyId
                 emitUpdate(items: initial.items, source: .gmail)
+                reportGmailState(.connected)
             } catch {
-                // Backoff silently until next sync cycle
+                reportGmailState(Self.gmailState(for: error))
             }
         }
+    }
+
+    private func reportGmailState(_ state: GmailSyncState) {
+        onGmailSyncState?(state)
+    }
+
+    /// Maps a Gmail or token failure onto the message the inbox shows.
+    static func gmailState(for error: Error) -> GmailSyncState {
+        if let gmailError = error as? GmailError {
+            switch gmailError {
+            case .missingToken:
+                return .failed("Gmail isn't connected. Sign in from Settings.")
+            case .unauthorized:
+                return .failed("Gmail sign-in expired. Sign in again from Settings.")
+            case .forbidden(let message):
+                return .failed("Google blocked Gmail access: \(message)")
+            case .rateLimited:
+                return .failed("Gmail rate limit reached. It will retry automatically.")
+            case .invalidURL, .httpError, .notFound, .decodingError:
+                return .failed(gmailError.localizedDescription)
+            case .invalidHistoryId:
+                return .failed("Gmail asked for a full refresh. It will retry automatically.")
+            }
+        }
+
+        if let tokenError = error as? GoogleTokenError {
+            return .failed(tokenError.localizedDescription)
+        }
+
+        if let authError = error as? AuthError {
+            switch authError {
+            case .missingRefreshToken, .missingAccessToken, .invalidClientId:
+                return .failed("Gmail isn't signed in. Sign in from Settings.")
+            case .keychainError:
+                return .failed("macOS blocked the saved Gmail sign-in. Open Settings and sign in again.")
+            default:
+                return .failed(authError.localizedDescription)
+            }
+        }
+
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost:
+                return .failed("No network. Gmail will retry automatically.")
+            case .timedOut:
+                return .failed("Gmail timed out. It will retry automatically.")
+            default:
+                return .failed("Gmail request failed: \(urlError.localizedDescription)")
+            }
+        }
+
+        return .failed("Couldn't load Gmail: \(error.localizedDescription)")
     }
 
     private func emitUpdate(items: [TriageItem], source: TriageSource) {

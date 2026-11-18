@@ -799,4 +799,63 @@ struct OpenWorkStoreTests {
         await store.refresh()
         #expect(store.status.updatedCount == 0)
     }
+
+    // MARK: - Stale Connection Flag
+
+    @Test("An explicit refresh still fetches when the launch-time flag is stale")
+    func explicitRefreshIgnoresStaleDisconnectedFlag() async {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let clock = TestClock(baseDate)
+        let item = makeItem(
+            repository: "Owner/Repo",
+            number: 1,
+            updatedAt: baseDate.timeIntervalSince1970
+        )
+        let fetch = FakeOpenWorkFetch([.success(makeResult([item]))])
+        let store = makeStore(fetch: fetch, defaults: defaults, clock: clock, isConfigured: false)
+
+        #expect(store.isConfigured == false)
+
+        // The Keychain can hold a readable PAT while the launch-time presence
+        // check failed (locked Keychain, token saved by an older build). A click
+        // on Refresh must try anyway instead of silently doing nothing.
+        await store.refresh()
+
+        #expect(await fetch.callCount == 1)
+        #expect(store.allItems == [item])
+        #expect(store.isConfigured == true)
+        #expect(store.status.phase == .ready)
+    }
+
+    @Test("A missing token during refresh disconnects the workspace")
+    func missingTokenRefreshDisconnects() async {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let clock = TestClock(baseDate)
+        let fetch = FakeOpenWorkFetch([.failure(.notConfigured)])
+        let store = makeStore(fetch: fetch, defaults: defaults, clock: clock)
+
+        await store.refresh()
+
+        #expect(store.isConfigured == false)
+        #expect(store.status.error == .notConfigured)
+    }
+
+    @Test("A 401 keeps the workspace connected so Update token is offered")
+    func unauthorizedKeepsConfigured() async {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let clock = TestClock(baseDate)
+        let fetch = FakeOpenWorkFetch([.failure(.unauthorized)])
+        let store = makeStore(fetch: fetch, defaults: defaults, clock: clock)
+
+        await store.refresh()
+
+        #expect(store.isConfigured == true)
+        #expect(store.status.error == .unauthorized)
+    }
 }

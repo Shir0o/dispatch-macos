@@ -182,8 +182,11 @@ public final class OpenWorkStore {
     }
 
     private func performRefresh(generation: Int) async {
-        // `clear()` may have run before this task got a turn.
-        guard isConfigured, generation == refreshGeneration else { return }
+        // `clear()` may have run before this task got a turn. The connection flag
+        // is deliberately not a precondition: a launch-time read can be stale
+        // (Keychain locked, token added by another build), and a click on Refresh
+        // must still try. The fetch itself reports `.notConfigured`.
+        guard generation == refreshGeneration else { return }
 
         let isFirstFetch = !hasFetchedThisLaunch
         lastAttempt = now()
@@ -193,10 +196,10 @@ public final class OpenWorkStore {
 
         do {
             let result = try await fetchAction()
-            guard isConfigured, generation == refreshGeneration else { return }
+            guard generation == refreshGeneration else { return }
             applySuccess(result, isFirstFetch: isFirstFetch)
         } catch {
-            guard isConfigured, generation == refreshGeneration else { return }
+            guard generation == refreshGeneration else { return }
             applyFailure(error)
         }
     }
@@ -204,6 +207,9 @@ public final class OpenWorkStore {
     // MARK: - Applying Results
 
     private func applySuccess(_ result: OpenWorkFetchResult, isFirstFetch: Bool) {
+        // A successful fetch is proof the stored token is readable and valid.
+        isConfigured = true
+
         // Capture the old position before the list is replaced.
         let previousIndex = selectedKey.flatMap { key in
             groups.flatMap(\.items).firstIndex { $0.key == key }
@@ -250,8 +256,15 @@ public final class OpenWorkStore {
     }
 
     private func applyFailure(_ error: Error) {
+        let fetchError = (error as? OpenWorkFetchError) ?? .transport
+        // Only a genuinely absent credential disconnects the workspace. A 401
+        // keeps the token marked present so Settings offers "Update token"
+        // instead of the disconnected empty state.
+        if fetchError == .notConfigured {
+            isConfigured = false
+        }
         // Keep every prior list and summary field; only the error changes.
-        status.error = (error as? OpenWorkFetchError) ?? .transport
+        status.error = fetchError
         status.phase = allItems.isEmpty ? .idle : .ready
     }
 

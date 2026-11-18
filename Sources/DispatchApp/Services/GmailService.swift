@@ -41,24 +41,33 @@ public enum GmailError: LocalizedError, Sendable, Equatable {
 // MARK: - GmailService
 
 public final class GmailService: Sendable {
-    private let tokenProvider: @Sendable () async throws -> String
+    private let tokenProvider: @Sendable (_ forceRefresh: Bool) async throws -> String
     private let session: URLSession
     private let baseURL = "https://gmail.googleapis.com/gmail/v1/users/me"
 
+    /// Initialises the service with a provider that can renew an expired token.
     public init(
+        session: URLSession = .shared,
+        refreshableTokenProvider: @escaping @Sendable (_ forceRefresh: Bool) async throws -> String
+    ) {
+        self.session = session
+        self.tokenProvider = refreshableTokenProvider
+    }
+
+    /// Static-token initialiser, used by tests and one-off callers.
+    public convenience init(
         session: URLSession = .shared,
         tokenProvider: @escaping @Sendable () async throws -> String
     ) {
-        self.session = session
-        self.tokenProvider = tokenProvider
+        self.init(session: session) { _ in try await tokenProvider() }
     }
 
     public convenience init(authService: AuthService, session: URLSession = .shared) {
-        self.init(session: session) {
-            guard let token = try await authService.readKeychainValue(key: AuthService.googleAccessTokenKey) else {
-                throw GmailError.missingToken
-            }
-            return token
+        let provider = GoogleTokenProvider.live(authService: authService) {
+            UserDefaults.standard.string(forKey: PreferencesStore.googleClientIdDefaultsKey) ?? ""
+        }
+        self.init(session: session) { force in
+            try await provider.token(forceRefresh: force)
         }
     }
 
@@ -80,7 +89,7 @@ public final class GmailService: Sendable {
             throw GmailError.invalidURL
         }
 
-        let token = try await tokenProvider()
+        let token = try await tokenProvider(false)
 
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -91,9 +100,22 @@ public final class GmailService: Sendable {
             request.httpBody = body
         }
 
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
+        var (data, response) = try await session.data(for: request)
+        guard var httpResponse = response as? HTTPURLResponse else {
             throw GmailError.httpError(statusCode: 0, message: "Invalid HTTP response")
+        }
+
+        // An access token can expire between reading the expiry and sending the
+        // request, or be revoked early. Renew once and replay before surfacing a
+        // 401, otherwise every Gmail view stays empty for the rest of the session.
+        if httpResponse.statusCode == 401 {
+            let refreshed = try await tokenProvider(true)
+            request.setValue("Bearer \(refreshed)", forHTTPHeaderField: "Authorization")
+            (data, response) = try await session.data(for: request)
+            guard let retried = response as? HTTPURLResponse else {
+                throw GmailError.httpError(statusCode: 0, message: "Invalid HTTP response")
+            }
+            httpResponse = retried
         }
 
         return (data, httpResponse)

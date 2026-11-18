@@ -5,8 +5,13 @@ import Observation
 @Observable
 @MainActor
 public final class PreferencesStore {
+    /// UserDefaults key for the Google OAuth Client ID. Public and nonisolated
+    /// so the token provider can resolve it off the main actor.
+    nonisolated public static let googleClientIdDefaultsKey = "dispatch.googleClientId"
+
     private enum Keys {
-        static let googleClientId = "dispatch.googleClientId"
+        static let googleClientId = googleClientIdDefaultsKey
+        static let googleAccountEmail = "dispatch.googleAccountEmail"
         static let githubUsername = "dispatch.githubUsername"
         static let projectsDirectory = "dispatch.projectsDirectory"
         static let preferredTerminal = "dispatch.preferredTerminal"
@@ -22,6 +27,18 @@ public final class PreferencesStore {
             defaults.set(googleClientId, forKey: Keys.googleClientId)
         }
     }
+
+    /// Gmail address captured from the Gmail profile after sign-in.
+    public var googleAccountEmail: String {
+        didSet {
+            defaults.set(googleAccountEmail, forKey: Keys.googleAccountEmail)
+        }
+    }
+
+    /// Whether a usable Google refresh token is present. Derived from the
+    /// Keychain at launch and updated by sign-in, sign-out and sync auth
+    /// failures. Never persisted, because the Keychain is the source of truth.
+    public var isGoogleConnected: Bool = false
 
     /// Login of the authenticated GitHub user, captured when a PAT is validated.
     public var githubUsername: String {
@@ -71,6 +88,7 @@ public final class PreferencesStore {
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.googleClientId = defaults.string(forKey: Keys.googleClientId) ?? ""
+        self.googleAccountEmail = defaults.string(forKey: Keys.googleAccountEmail) ?? ""
         self.githubUsername = defaults.string(forKey: Keys.githubUsername) ?? ""
         self.projectsDirectory = defaults.string(forKey: Keys.projectsDirectory) ?? "~/Projects"
 

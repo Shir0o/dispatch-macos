@@ -11,8 +11,11 @@ struct DispatchApp: App {
     @State private var hasStarted = false
 
     private let gmailService: GmailService
+    private let googleTokens: GoogleTokenProvider
     private let gitHubService: GitHubService
     private let syncCoordinator: SyncCoordinator
+    private let preferencesRef: PreferencesStore
+    private let triageRef: TriageStore
 
     init() {
         let auth = AuthService()
@@ -34,12 +37,23 @@ struct DispatchApp: App {
             return token
         }
 
-        let gmail = GmailService(authService: auth)
+        let googleTokens = GoogleTokenProvider.live(authService: auth) {
+            UserDefaults.standard.string(forKey: PreferencesStore.googleClientIdDefaultsKey) ?? ""
+        }
+
+        let gmail = GmailService(session: .shared) { forceRefresh in
+            try await googleTokens.token(forceRefresh: forceRefresh)
+        }
         let triage = TriageStore()
         let openWork = OpenWorkStore(
             fetchAction: { try await gitHub.fetchOpenWork() },
             isConfigured: migration.isConfigured
         )
+
+        // The Keychain is the source of truth for Gmail, not the Settings view's
+        // per-session state: a refresh token saved by an earlier launch means the
+        // app is still signed in after a relaunch.
+        preferences.isGoogleConnected = AuthService.hasGoogleRefreshToken()
 
         let coordinator = SyncCoordinator(gmailService: gmail) { @MainActor in
             await openWork.refreshIfDue()
@@ -51,8 +65,11 @@ struct DispatchApp: App {
         _openWorkStore = State(initialValue: openWork)
 
         self.gmailService = gmail
+        self.googleTokens = googleTokens
         self.gitHubService = gitHub
         self.syncCoordinator = coordinator
+        self.preferencesRef = preferences
+        self.triageRef = triage
     }
 
     var body: some Scene {
@@ -105,6 +122,18 @@ struct DispatchApp: App {
             await syncCoordinator.setOnItemsUpdated { [weak triageStore] items, source in
                 Task { @MainActor in
                     triageStore?.setItems(items, for: source)
+                }
+            }
+            await syncCoordinator.setOnGmailSyncState { [weak triageRef, weak preferencesRef] state in
+                Task { @MainActor in
+                    triageRef?.setGmailSyncState(state)
+                    if state.failureMessage != nil {
+                        // A failed sync means the stored grant is no longer usable;
+                        // stop claiming the account is connected.
+                        preferencesRef?.isGoogleConnected = false
+                    } else if state == .connected {
+                        preferencesRef?.isGoogleConnected = true
+                    }
                 }
             }
             await syncCoordinator.start()

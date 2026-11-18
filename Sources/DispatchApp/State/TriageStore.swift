@@ -73,6 +73,9 @@ public final class TriageStore {
     public var toastMessage: String? = nil
     public var isToastVisible: Bool = false
 
+    /// Result of the most recent Gmail sync, used by the empty state and banner.
+    public private(set) var gmailSyncState: GmailSyncState = .unknown
+
     // MARK: - Injected Services
 
     public var gmailService: GmailService?
@@ -127,8 +130,12 @@ public final class TriageStore {
 
     // MARK: - Ingestion
 
-    public func setItems(_ items: [TriageItem], for source: TriageSource) {
-        switch source {
+    /// Records the most recent Gmail sync outcome for the stream's empty state.
+    public func setGmailSyncState(_ state: GmailSyncState) {
+        gmailSyncState = state
+    }
+
+    public func setItems(_ items: [TriageItem], for source: TriageSource) {        switch source {
         case .gmail:
             self.gmailItems = Array(items.prefix(500))
         case .gitHub:
