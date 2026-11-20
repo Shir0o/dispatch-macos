@@ -2,6 +2,9 @@ import Foundation
 import Testing
 @testable import DispatchApp
 
+/// This file's handler bucket; suites in this file are .serialized.
+private let mockSessionID = "gmail-auth-recovery"
+
 // MARK: - Force Flag Recorder
 
 private actor TokenRequestRecorder {
@@ -19,6 +22,7 @@ struct GmailAuthRecoveryTests {
 
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpAdditionalHeaders = [MockURLProtocol.sessionHeader: mockSessionID]
         configuration.protocolClasses = [MockURLProtocol.self]
         return URLSession(configuration: configuration)
     }
@@ -34,10 +38,10 @@ struct GmailAuthRecoveryTests {
 
     @Test("A 401 is retried once with a forced token refresh")
     func retriesUnauthorizedOnce() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = TokenRequestRecorder()
 
-        MockURLProtocol.register { request in
+        MockURLProtocol.register(mockSessionID) { request in
             let url = request.url!
             let authorization = request.value(forHTTPHeaderField: "Authorization")
             if authorization == "Bearer fresh" {
@@ -62,10 +66,10 @@ struct GmailAuthRecoveryTests {
 
     @Test("A second 401 surfaces unauthorized instead of looping")
     func secondUnauthorizedSurfaces() async {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = TokenRequestRecorder()
 
-        MockURLProtocol.register { request in
+        MockURLProtocol.register(mockSessionID) { request in
             (Self.response(for: request.url!, status: 401), Data(#"{"error":"invalid_token"}"#.utf8))
         }
 

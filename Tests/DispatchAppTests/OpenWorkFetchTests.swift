@@ -2,6 +2,9 @@ import Foundation
 import Testing
 @testable import DispatchApp
 
+/// This file's handler bucket; suites in this file are .serialized.
+private let mockSessionID = "open-work-fetch"
+
 // MARK: - Request Recorder
 
 /// Thread-safe record of the URLs the service actually requested.
@@ -120,7 +123,7 @@ private func registerOpenWorkPages(
     pages: [Int: OpenWorkMockPage],
     fallback: OpenWorkMockPage? = nil
 ) {
-    MockURLProtocol.register { request in
+    MockURLProtocol.register(mockSessionID) { request in
         guard let url = request.url, url.path == openWorkSearchPath else { return nil }
         recorder.record(url)
 
@@ -148,6 +151,7 @@ private func registerOpenWorkPages(
 
 private func makeSession() -> URLSession {
     let configuration = URLSessionConfiguration.ephemeral
+    configuration.httpAdditionalHeaders = [MockURLProtocol.sessionHeader: mockSessionID]
     configuration.protocolClasses = [MockURLProtocol.self]
     return URLSession(configuration: configuration)
 }
@@ -178,7 +182,7 @@ struct OpenWorkFetchTests {
 
     @Test("One page maps items, total_count and the query contract")
     func onePageMapsItemsAndQueryContract() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         let body = makeSearchJSON(totalCount: 2, items: [
             makeIssueJSON(
@@ -230,7 +234,7 @@ struct OpenWorkFetchTests {
 
     @Test("Follows the next link across multiple pages")
     func followsNextLink() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         let pageOne = OpenWorkMockPage(
             body: makeSearchJSON(totalCount: 150, items: [
@@ -261,7 +265,7 @@ struct OpenWorkFetchTests {
 
     @Test("A matched count above 400 is truncated even without a next link")
     func matchedCountAboveCapIsTruncated() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         let body = makeSearchJSON(totalCount: 512, items: [makeIssueJSON(number: 1)])
         registerOpenWorkPages(recorder: recorder, pages: [1: OpenWorkMockPage(body: body)])
@@ -275,7 +279,7 @@ struct OpenWorkFetchTests {
 
     @Test("Duplicate keys across pages keep the first occurrence")
     func deduplicatesAcrossPages() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         let pageOne = OpenWorkMockPage(
             body: makeSearchJSON(totalCount: 2, items: [
@@ -306,7 +310,7 @@ struct OpenWorkFetchTests {
 
     @Test("Exactly 400 items across four pages is complete")
     func exactlyFourHundredIsComplete() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         registerOpenWorkPages(recorder: recorder, pages: [
             1: makeItemsPage(page: 1, count: 100, totalCount: 400, next: 2),
@@ -327,7 +331,7 @@ struct OpenWorkFetchTests {
 
     @Test("Page four advertising a next link is truncated after four pages")
     func pageFourNextLinkIsTruncated() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         registerOpenWorkPages(recorder: recorder, pages: [
             1: makeItemsPage(page: 1, count: 100, totalCount: 400, next: 2),
@@ -346,7 +350,7 @@ struct OpenWorkFetchTests {
 
     @Test("A 404 on page two throws notFound and never becomes an empty success")
     func pageTwoNotFoundThrows() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         let pageOne = OpenWorkMockPage(
             body: makeSearchJSON(totalCount: 2, items: [makeIssueJSON(number: 1)]),
@@ -363,7 +367,7 @@ struct OpenWorkFetchTests {
 
     @Test("401 maps to unauthorized")
     func unauthorized() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         registerOpenWorkPages(
             recorder: recorder,
@@ -377,7 +381,7 @@ struct OpenWorkFetchTests {
 
     @Test("403 maps to forbidden with the rate-limit reset time")
     func forbiddenWithReset() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         let resetEpoch = 1_700_000_000.0
         registerOpenWorkPages(recorder: recorder, pages: [
@@ -395,7 +399,7 @@ struct OpenWorkFetchTests {
 
     @Test("5xx maps to server with the status code")
     func serverError() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         registerOpenWorkPages(
             recorder: recorder,
@@ -409,7 +413,7 @@ struct OpenWorkFetchTests {
 
     @Test("Malformed JSON maps to decoding")
     func malformedJSON() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         registerOpenWorkPages(
             recorder: recorder,
@@ -423,8 +427,8 @@ struct OpenWorkFetchTests {
 
     @Test("A URL error maps to transport")
     func urlErrorMapsToTransport() async throws {
-        MockURLProtocol.reset()
-        MockURLProtocol.register { _ in
+        MockURLProtocol.reset(mockSessionID)
+        MockURLProtocol.register(mockSessionID) { _ in
             throw URLError(.notConnectedToInternet)
         }
 
@@ -435,7 +439,7 @@ struct OpenWorkFetchTests {
 
     @Test("A missing token maps to notConfigured without a request")
     func missingToken() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         registerOpenWorkPages(
             recorder: recorder,
@@ -453,7 +457,7 @@ struct OpenWorkFetchTests {
 
     @Test("A Keychain failure maps to notConfigured")
     func keychainFailure() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         registerOpenWorkPages(
             recorder: recorder,
@@ -471,7 +475,7 @@ struct OpenWorkFetchTests {
 
     @Test("A nil author becomes ghost")
     func nilAuthorBecomesGhost() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         let body = makeSearchJSON(
             totalCount: 1,
@@ -487,7 +491,7 @@ struct OpenWorkFetchTests {
 
     @Test("Records with an unparsable repository or html URL are skipped")
     func invalidURLsAreSkipped() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let recorder = OpenWorkRequestRecorder()
         let body = makeSearchJSON(totalCount: 3, items: [
             makeIssueJSON(number: 1),
