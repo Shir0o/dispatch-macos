@@ -2,6 +2,9 @@ import Foundation
 import Testing
 @testable import DispatchApp
 
+/// This file's handler bucket; suites in this file are .serialized.
+private let mockSessionID = "triage-store"
+
 @Suite("TriageStore Tests", .serialized)
 @MainActor
 struct TriageStoreTests {
@@ -36,6 +39,7 @@ struct TriageStoreTests {
 
     private func makeMockSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpAdditionalHeaders = [MockURLProtocol.sessionHeader: mockSessionID]
         configuration.protocolClasses = [MockURLProtocol.self]
         return URLSession(configuration: configuration)
     }
@@ -166,8 +170,8 @@ struct TriageStoreTests {
         store.gmailItems = [item0, item1, item2]
 
         // Configure GmailService that simulates network failure
-        MockURLProtocol.reset()
-        MockURLProtocol.register { request in
+        MockURLProtocol.reset(mockSessionID)
+        MockURLProtocol.register(mockSessionID) { request in
             guard let url = request.url?.absoluteString, url.contains("modify") else { return nil }
             let resp = HTTPURLResponse(
                 url: request.url!,
@@ -237,8 +241,8 @@ struct TriageStoreTests {
         let item1 = makeTestItem(id: "g1", title: "Archive Me")
         store.gmailItems = [item0, item1]
 
-        MockURLProtocol.reset()
-        MockURLProtocol.register { request in
+        MockURLProtocol.reset(mockSessionID)
+        MockURLProtocol.register(mockSessionID) { request in
             guard let url = request.url?.absoluteString, url.contains("modify") else { return nil }
             let resp = HTTPURLResponse(
                 url: request.url!,

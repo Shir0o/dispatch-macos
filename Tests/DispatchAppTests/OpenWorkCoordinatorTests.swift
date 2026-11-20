@@ -2,6 +2,9 @@ import Foundation
 import Testing
 @testable import DispatchApp
 
+/// This file's handler bucket; suites in this file are .serialized.
+private let mockSessionID = "open-work-coordinator"
+
 // MARK: - Refresh counter
 
 actor RefreshCounter {
@@ -16,11 +19,12 @@ actor RefreshCounter {
 /// handler invoke the Open Work refresh closure, and a second `start()` is a
 /// no-op. The 15-minute due interval and first-fetch behavior are covered by
 /// `OpenWorkStoreTests`, which owns an injected clock.
-@Suite("Open Work Coordinator Tests")
+@Suite("Open Work Coordinator Tests", .serialized)
 struct OpenWorkCoordinatorTests {
 
     private func makeMockSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpAdditionalHeaders = [MockURLProtocol.sessionHeader: mockSessionID]
         configuration.protocolClasses = [MockURLProtocol.self]
         return URLSession(configuration: configuration)
     }
@@ -32,8 +36,8 @@ struct OpenWorkCoordinatorTests {
     }
 
     private func registerGmailHandlers() {
-        MockURLProtocol.reset()
-        MockURLProtocol.register { request in
+        MockURLProtocol.reset(mockSessionID)
+        MockURLProtocol.register(mockSessionID) { request in
             guard let url = request.url?.absoluteString else { return nil }
 
             if url.contains("/profile") {

@@ -2,68 +2,8 @@ import Foundation
 import Testing
 @testable import DispatchApp
 
-// MARK: - Mock URL Protocol for Network Isolation
-
-final class MockURLProtocol: URLProtocol, @unchecked Sendable {
-    typealias RequestHandler = @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)?
-
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var handlers: [RequestHandler] = []
-
-    static func reset() {
-        lock.lock()
-        defer { lock.unlock() }
-        handlers.removeAll()
-    }
-
-    static func register(_ handler: @escaping RequestHandler) {
-        lock.lock()
-        defer { lock.unlock() }
-        handlers.append(handler)
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool {
-        return true
-    }
-
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
-        return request
-    }
-
-    override func startLoading() {
-        MockURLProtocol.lock.lock()
-        let currentHandlers = MockURLProtocol.handlers
-        MockURLProtocol.lock.unlock()
-
-        for handler in currentHandlers {
-            do {
-                if let (response, data) = try handler(request) {
-                    client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-                    client?.urlProtocol(self, didLoad: data)
-                    client?.urlProtocolDidFinishLoading(self)
-                    return
-                }
-            } catch {
-                client?.urlProtocol(self, didFailWithError: error)
-                return
-            }
-        }
-
-        // Default 404 fallback
-        let url = request.url ?? URL(string: "https://mock.local")!
-        let response = HTTPURLResponse(
-            url: url,
-            statusCode: 404,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/json"]
-        )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data("{\"error\": \"not found\"}".utf8))
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    override func stopLoading() {}
-}
+/// This file's handler bucket; suites in this file are .serialized.
+private let mockSessionID = "sync-coordinator"
 
 // MARK: - Update Collector for Thread-Safe Concurrency
 
@@ -89,11 +29,12 @@ actor UpdateCollector {
 
 // MARK: - Test Suite
 
-@Suite("SyncCoordinator Tests")
+@Suite("SyncCoordinator Tests", .serialized)
 struct SyncCoordinatorTests {
 
     private func makeMockSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpAdditionalHeaders = [MockURLProtocol.sessionHeader: mockSessionID]
         configuration.protocolClasses = [MockURLProtocol.self]
         return URLSession(configuration: configuration)
     }
@@ -157,12 +98,12 @@ struct SyncCoordinatorTests {
 
     @Test("Cold bootstrap sync sets initial historyId")
     func testColdBootstrapSync() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let session = makeMockSession()
         let gmail = makeGmailService(session: session)
 
         // Mock Gmail endpoints
-        MockURLProtocol.register { request in
+        MockURLProtocol.register(mockSessionID) { request in
             guard let url = request.url?.absoluteString else { return nil }
 
             if url.contains("/profile") {
@@ -209,12 +150,12 @@ struct SyncCoordinatorTests {
 
     @Test("Incremental polling delta logic updates historyId and reconciles added threads")
     func testIncrementalPollingDeltaLogic() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let session = makeMockSession()
         let gmail = makeGmailService(session: session)
 
         // Step 1: Bootstrap setup
-        MockURLProtocol.register { request in
+        MockURLProtocol.register(mockSessionID) { request in
             guard let url = request.url?.absoluteString else { return nil }
 
             if url.contains("/profile") {
@@ -252,9 +193,9 @@ struct SyncCoordinatorTests {
         #expect(initialHistory == "1000")
 
         // Step 2: Clear handlers and register incremental history and reconciliation responses
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
 
-        MockURLProtocol.register { request in
+        MockURLProtocol.register(mockSessionID) { request in
             guard let url = request.url?.absoluteString else { return nil }
 
             // Incremental history endpoint: reports new historyId "1050" with added message in thread-2
@@ -321,12 +262,12 @@ struct SyncCoordinatorTests {
 
     @Test("HTTP 404 INVALID_HISTORY_ID triggers full inbox reconciliation and clears stale history ID")
     func testInvalidHistoryId404Recovery() async throws {
-        MockURLProtocol.reset()
+        MockURLProtocol.reset(mockSessionID)
         let session = makeMockSession()
         let gmail = makeGmailService(session: session)
 
         // Bootstrap with history ID "999"
-        MockURLProtocol.register { request in
+        MockURLProtocol.register(mockSessionID) { request in
             guard let url = request.url?.absoluteString else { return nil }
 
             if url.contains("/profile") {
@@ -363,8 +304,8 @@ struct SyncCoordinatorTests {
         #expect(await coordinator.lastGmailHistoryId == "999")
 
         // Now configure history endpoint to return HTTP 404 INVALID_HISTORY_ID
-        MockURLProtocol.reset()
-        MockURLProtocol.register { request in
+        MockURLProtocol.reset(mockSessionID)
+        MockURLProtocol.register(mockSessionID) { request in
             guard let url = request.url?.absoluteString else { return nil }
 
             // Stale history query fails with HTTP 404
