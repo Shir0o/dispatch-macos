@@ -3,6 +3,7 @@ import Security
 import AuthenticationServices
 import CryptoKit
 import AppKit
+import os
 
 // MARK: - AuthError
 
@@ -117,6 +118,26 @@ final class ContinuationGate<Success: Sendable>: @unchecked Sendable {
     }
 }
 
+// MARK: - Keychain read cache
+
+/// What one Keychain account produced when it was read this launch.
+private enum KeychainReadOutcome: Sendable {
+    case value(String)
+    case missing
+    case denied(OSStatus)
+}
+
+/// One Keychain read per account per launch, including a refusal.
+///
+/// Reading an item the running build is not trusted for raises the macOS access
+/// prompt, and the sync loop asks for the same credentials again every 45
+/// seconds. Remembering the outcome — "Deny" included — keeps one answer for the
+/// whole launch instead of re-asking on every cycle. A save or delete replaces
+/// the entry, so the app still sees credentials it changes itself.
+private let keychainReads = OSAllocatedUnfairLock(
+    initialState: [String: KeychainReadOutcome]()
+)
+
 // MARK: - AuthService
 
 public actor AuthService {
@@ -187,9 +208,22 @@ public actor AuthService {
         } else if status != errSecSuccess {
             throw AuthError.keychainError(status: status)
         }
+
+        keychainReads.withLock { $0[key] = .value(value) }
     }
 
     public func readKeychainValue(key: String) throws -> String? {
+        if let cached = keychainReads.withLock({ $0[key] }) {
+            switch cached {
+            case .value(let value):
+                return value
+            case .missing:
+                return nil
+            case .denied(let status):
+                throw AuthError.keychainError(status: status)
+            }
+        }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.serviceName,
@@ -201,7 +235,14 @@ public actor AuthService {
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound {
+            keychainReads.withLock { $0[key] = .missing }
             return nil
+        }
+        if status == errSecUserCanceled || status == errSecAuthFailed {
+            // The user declined the prompt, or this build may not read the
+            // item. Asking again is another prompt, not another chance.
+            keychainReads.withLock { $0[key] = .denied(status) }
+            throw AuthError.keychainError(status: status)
         }
         guard status == errSecSuccess else {
             throw AuthError.keychainError(status: status)
@@ -209,6 +250,7 @@ public actor AuthService {
         guard let data = item as? Data, let string = String(data: data, encoding: .utf8) else {
             throw AuthError.decodingFailed
         }
+        keychainReads.withLock { $0[key] = .value(string) }
         return string
     }
 
@@ -223,6 +265,7 @@ public actor AuthService {
         if status != errSecSuccess && status != errSecItemNotFound {
             throw AuthError.keychainError(status: status)
         }
+        keychainReads.withLock { $0[key] = .missing }
     }
 
     public func clearAllCredentials() throws {
@@ -600,6 +643,7 @@ public actor AuthService {
             return false
         }
 
+        keychainReads.withLock { $0[gitHubPATKey] = .value(trimmed) }
         return hasGitHubPAT()
     }
 
