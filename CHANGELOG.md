@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.2](https://github.com/Shir0o/dispatch-macos/compare/v1.6.1...v1.6.2) (2026-11-20)
+
+
+### Bug Fixes
+
+* **auth:** read each Keychain credential once per launch ([#23](https://github.com/Shir0o/dispatch-macos/issues/23)) ([32a58d9](https://github.com/Shir0o/dispatch-macos/commit/32a58d92dc82a108af9a3cadf2b3483e3936e139))
+
 ## [1.6.1](https://github.com/Shir0o/dispatch-macos/compare/v1.6.0...v1.6.1) (2026-11-18)
 
 
